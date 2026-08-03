@@ -1,0 +1,45 @@
+name: 03-disable-access-keys
+
+on:
+  workflow_dispatch:
+
+env:
+  BOOTSTRAP_REGION: eusc-de-east-1
+
+jobs:
+  disable-access-keys:
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    name: Disable deploy keys
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      # Disable access keys for the user CORESERVICES_INIT_KEY in account 118669550283 (aws-cloud-org-001)
+      - name: Configure AWS credentials
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: accesskeys
+          aws-region: ${{ env.BOOTSTRAP_REGION }}
+          aws-access-key-id: ${{ secrets.INIT_KEY_118669550283 }}
+          aws-secret-access-key: ${{ secrets.INIT_SECRET_118669550283 }}
+
+      - name: Disable deploy keys
+        run: |
+          aws iam update-access-key --access-key-id ${{ secrets.INIT_KEY_118669550283 }} --user-name CORESERVICES_INIT_KEY --status Inactive
+
+      # Disable access keys for the user CORESERVICES_INIT_KEY in account 118669550429 (aws-cloud-org-002)
+      - name: Configure AWS credentials
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: accesskeys
+          aws-region: ${{ env.BOOTSTRAP_REGION }}
+          aws-access-key-id: ${{ secrets.INIT_KEY_118669550429 }}
+          aws-secret-access-key: ${{ secrets.INIT_SECRET_118669550429 }}
+
+      - name: Disable deploy keys
+        run: |
+          aws iam update-access-key --access-key-id ${{ secrets.INIT_KEY_118669550429 }} --user-name CORESERVICES_INIT_KEY --status Inactive

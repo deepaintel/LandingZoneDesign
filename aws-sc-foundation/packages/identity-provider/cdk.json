@@ -1,0 +1,7 @@
+{
+  "app": "npx tsx bin/identity-provider.ts",
+  "context": {
+    "githubOrg": "topdanmark",
+    "githubRepos": ["if-github-emu"]
+  }
+}

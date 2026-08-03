@@ -1,0 +1,16 @@
+packages:
+  - "packages/*"
+catalog:
+  "@ccoe-aws/ccoe-config": 0.0.4
+  aws-cdk-lib: ^2.211.0
+  constructs: ^10.4.2
+  "@types/node": ^24.0.13
+  aws-cdk: ^2.1032.0
+  tsx: ^4.19.4
+  vitest: ^3.2.4
+  typescript: ^5.9.2
+  prettier: ^3.9.4
+allowBuilds:
+  esbuild: true
+minimumReleaseAgeExclude:
+  - "@ccoe-aws/ccoe-config@0.0.4"

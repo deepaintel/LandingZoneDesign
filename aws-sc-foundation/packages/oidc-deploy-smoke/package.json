@@ -1,0 +1,33 @@
+{
+  "name": "oidc-deploy-smoke",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal CDK stack for GitHub OIDC deployment smoke test",
+  "bin": {
+    "oidc-deploy-smoke": "bin/oidc-deploy-smoke.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy --all --require-approval never",
+    "validate": "pnpm run build && pnpm run test && pnpm run synth",
+    "prettier:format": "prettier --write .",
+    "prettier:check": "prettier --check ."
+  },
+  "dependencies": {
+    "aws-cdk-lib": "catalog:",
+    "constructs": "catalog:"
+  },
+  "devDependencies": {
+    "@ccoe-aws/ccoe-config": "catalog:",
+    "@types/node": "catalog:",
+    "aws-cdk": "catalog:",
+    "prettier": "catalog:",
+    "tsx": "catalog:",
+    "vitest": "catalog:",
+    "typescript": "catalog:"
+  }
+}

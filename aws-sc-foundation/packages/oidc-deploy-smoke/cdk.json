@@ -1,0 +1,4 @@
+{
+  "app": "npx tsx bin/oidc-deploy-smoke.ts",
+  "context": {}
+}

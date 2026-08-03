@@ -1,0 +1,62 @@
+name: 02-identity-provider
+
+on:
+  workflow_dispatch:
+
+env:
+  REGION: eusc-de-east-1
+  GITHUB_OIDC_ISSUER_URL: https://token.actions.if-it.ghe.com
+  GITHUB_ORG: ccoe-aws
+  GITHUB_REPOS: aws-sc-foundation,aws-sc-landing-zone
+
+jobs:
+  identity-provider:
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    name: Deploy identity provider in ${{ matrix.account }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account:
+          - "118669550429" # aws-cloud-org-002 (staging)
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Configure AWS credentials
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: accesskeys
+          aws-region: ${{ env.REGION }}
+          aws-access-key-id: ${{ secrets[format('INIT_KEY_{0}', matrix.account)] }}
+          aws-secret-access-key: ${{ secrets[format('INIT_SECRET_{0}', matrix.account)] }}
+
+      - name: Setup Node
+        uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+        with:
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Enable PNPM
+        uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate
+        env:
+          CDK_DEFAULT_REGION: ${{ env.REGION }}
+          GITHUB_OIDC_ISSUER_URL: ${{ env.GITHUB_OIDC_ISSUER_URL }}
+          GITHUB_ORG: ${{ env.GITHUB_ORG }}
+          GITHUB_REPOS: ${{ env.GITHUB_REPOS }}
+        run: pnpm --filter identity-provider run validate
+
+      - name: Deploy
+        env:
+          CDK_DEFAULT_REGION: ${{ env.REGION }}
+          GITHUB_OIDC_ISSUER_URL: ${{ env.GITHUB_OIDC_ISSUER_URL }}
+          GITHUB_ORG: ${{ env.GITHUB_ORG }}
+          GITHUB_REPOS: ${{ env.GITHUB_REPOS }}
+        run: pnpm --filter identity-provider run deploy

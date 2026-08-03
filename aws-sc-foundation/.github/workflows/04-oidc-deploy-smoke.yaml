@@ -1,0 +1,62 @@
+name: 04-oidc-deploy-smoke
+
+on:
+  workflow_dispatch:
+
+env:
+  REGION: eusc-de-east-1
+
+jobs:
+  deploy-smoke:
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    name: OIDC smoke deploy in ${{ matrix.account }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account:
+          - "118669550429" # aws-cloud-org-002 (staging)
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup Node
+        uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+        with:
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Show OIDC claims
+        env:
+          AUDIENCE: sts.${{ env.REGION }}.amazonaws.eu
+        run: |
+          TOKEN_JSON=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUDIENCE")
+          ID_TOKEN=$(echo "$TOKEN_JSON" | jq -r .value)
+          echo "$ID_TOKEN" | awk -F. '{print $2}' | base64 -d 2>/dev/null | jq -r
+
+      - name: Configure AWS credentials with OIDC
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: oidc
+          aws-role-to-assume: arn:aws-eusc:iam::${{ matrix.account }}:role/github-actions-role
+          aws-session-name: oidc-deploy-smoke-${{ github.run_id }}
+          aws-region: ${{ env.REGION }}
+
+      - name: Enable PNPM
+        uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Deploy smoke stack
+        env:
+          CDK_DEFAULT_REGION: ${{ env.REGION }}
+        run: pnpm --filter oidc-deploy-smoke run deploy
+
+      - name: Destroy smoke stack
+        if: ${{ always() }}
+        env:
+          CDK_DEFAULT_REGION: ${{ env.REGION }}
+        run: pnpm --filter oidc-deploy-smoke exec cdk destroy --force

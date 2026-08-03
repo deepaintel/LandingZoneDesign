@@ -1,0 +1,49 @@
+name: 01-bootstrap-cdk
+
+on:
+  workflow_dispatch:
+
+env:
+  BOOTSTRAP_REGION: eusc-de-east-1
+
+jobs:
+  bootstrap:
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    name: CDK bootstrap ${{ matrix.account }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        account:
+          - "118669550283" # aws-cloud-org-001
+          - "118669550429" # aws-cloud-org-002
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Configure AWS credentials
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: accesskeys
+          aws-region: ${{ env.BOOTSTRAP_REGION }}
+          aws-access-key-id: ${{ secrets[format('INIT_KEY_{0}', matrix.account)] }}
+          aws-secret-access-key: ${{ secrets[format('INIT_SECRET_{0}', matrix.account)] }}
+
+      - name: Setup Node
+        uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+        with:
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Enable PNPM
+        uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: CDK bootstrap
+        env:
+          CDK_DEFAULT_REGION: ${{ env.BOOTSTRAP_REGION }}
+        run: npx aws-cdk@2 bootstrap aws://${{ matrix.account }}/${{ env.BOOTSTRAP_REGION }}

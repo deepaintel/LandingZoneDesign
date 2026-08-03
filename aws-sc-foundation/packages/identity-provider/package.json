@@ -1,0 +1,33 @@
+{
+  "name": "identity-provider",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Contains the IaC for the Identity Provider stack, which creates the OIDC provider and IAM role for GitHub Actions to assume",
+  "bin": {
+    "identity-provider": "bin/identity-provider.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "synth": "cdk synth",
+    "diff": "cdk diff",
+    "deploy": "cdk deploy --all --require-approval never",
+    "validate": "pnpm run build && pnpm run test && pnpm run synth",
+    "prettier:format": "prettier --write .",
+    "prettier:check": "prettier --check ."
+  },
+  "dependencies": {
+    "aws-cdk-lib": "catalog:",
+    "constructs": "catalog:"
+  },
+  "devDependencies": {
+    "@ccoe-aws/ccoe-config": "catalog:",
+    "@types/node": "catalog:",
+    "aws-cdk": "catalog:",
+    "prettier": "catalog:",
+    "tsx": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
