@@ -1,0 +1,603 @@
+# =============================================================================================
+# Production deployment - REPOSITORY READINESS ONLY.
+#
+# Production MUST NOT be executed during the OU implementation phase. In addition to the
+# protected `production` GitHub Environment approval, this workflow is hard-gated behind the
+# `PRODUCTION_DEPLOYMENT_ENABLED` environment variable, which is expected to be unset (or not
+# `true`) until Production execution is explicitly authorised.
+#
+# Trigger: manual `workflow_dispatch` only. There is deliberately no automatic trigger from
+# `main` and no automatic trigger from `release/*`.
+#
+# Deployment source: run this workflow FROM the approved protected release/* branch that was
+# validated in Staging. GitHub checks out the ref the run was dispatched against, so the branch
+# selected when dispatching IS the deployment baseline. The `release_ref` input must match it,
+# and `release_commit_sha` may pin the exact validated commit.
+#
+# NOTE: the approved `checkout` composite action is invoked without inputs, matching its verified
+# usage in aws-sc-foundation. Its `ref` input (if any) is unconfirmed, so this workflow relies on
+# the dispatch ref rather than guessing an interface. Revisit once the composite action
+# definition in ccoe-aws/reusable-workflows has been inspected.
+#
+# Required GitHub Environment (`production`) variables:
+#   PRODUCTION_DEPLOYMENT_ENABLED    - policy toggle; must be exactly `true` to permit execution
+#
+# Not read from GitHub Environment variables:
+#   - AWS management account ID       -> comes from config/production.yaml via ccoe-config-reader.
+#   - Organizations Root ID           -> resolved at deploy time by the prepare-organization action.
+#   - IAM Identity Center identifiers -> resolved at deploy time through the authenticated AWS API.
+# =============================================================================================
+name: production-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: 'Approved protected release/* branch this run must execute from (must match the branch selected above).'
+        required: true
+        type: string
+      release_commit_sha:
+        description: 'Full 40-character commit SHA of the Staging-validated release baseline.'
+        required: true
+        type: string
+      staging_validation_evidence:
+        description: 'Link or reference to the Staging validation evidence and release approval.'
+        required: true
+        type: string
+      change_reference:
+        description: 'ITSM/CAB change reference, or NOT-REQUIRED when not mandated by the change classification.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  # Consumed by the approved ccoe-aws/reusable-workflows composite actions.
+  ESC_PARTITION: eusc
+  ESC_REGION: eusc-de-east-1
+  # Name of the foundation-managed custom deployment role. aws-sc-foundation's
+  # identity-provider stack currently deploys this role as `github-actions-role`. The
+  # reusable-workflows `aws-credentials` composite action defaults to `github-action-deploy-role`,
+  # so we override explicitly rather than rely on the default.
+  DEPLOYMENT_ROLE_NAME: github-actions-role
+  OU_STRUCTURE_STACK_ID: OuStructureStack
+  IDENTITY_CENTER_PERMISSION_SETS_STACK_ID: IdentityCenterPermissionSetsStack
+  ORGANIZATION_POLICY_STACK_ID: OrganizationPolicyStack
+  # Shared Control Tower onboarding accounts (Audit / Log Archive). Present here for
+  # readiness/synth/validate only in this iteration; the deploy job below deliberately does NOT
+  # invoke `cdk deploy` against this stack per
+  # `.apm/instructions/shared-account-provisioning.instructions.md` §14. Production shared-account
+  # creation is deferred to a separately approved activation change.
+  SHARED_ACCOUNTS_STACK_ID: SharedAccountsStack
+
+jobs:
+  # -------------------------------------------------------------------------------------------
+  # Governance gate. Runs before the protected environment is touched.
+  # -------------------------------------------------------------------------------------------
+  authorize:
+    name: Verify Production deployment authority
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm Production execution is authorised for this phase
+        env:
+          PRODUCTION_DEPLOYMENT_ENABLED: ${{ vars.PRODUCTION_DEPLOYMENT_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [ "${PRODUCTION_DEPLOYMENT_ENABLED:-}" != "true" ]; then
+            echo "::error::Production deployment is not authorised. This workflow exists for repository"
+            echo "::error::readiness only during the AWS Organizations OU implementation phase. Set the"
+            echo "::error::PRODUCTION_DEPLOYMENT_ENABLED repository/environment variable to 'true' only"
+            echo "::error::after Production execution has been explicitly approved."
+            exit 1
+          fi
+          echo "Production execution is authorised."
+
+      - name: Confirm the dispatch ref is a protected release branch
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          case "${GITHUB_REF}" in
+            refs/heads/release/*)
+              ;;
+            *)
+              echo "::error::Production may only be deployed from a protected release/* branch."
+              echo "::error::This run was dispatched against '${GITHUB_REF}'. Re-dispatch selecting the release branch."
+              exit 1
+              ;;
+          esac
+
+          if [ "${RELEASE_REF}" != "${GITHUB_REF_NAME}" ] && [ "${RELEASE_REF}" != "${GITHUB_REF}" ]; then
+            echo "::error::release_ref '${RELEASE_REF}' does not match the dispatched ref '${GITHUB_REF_NAME}'."
+            exit 1
+          fi
+
+          if ! printf '%s' "${RELEASE_COMMIT_SHA}" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::release_commit_sha must be a full 40-character commit SHA."
+            exit 1
+          fi
+          if [ "${RELEASE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::release_commit_sha '${RELEASE_COMMIT_SHA}' does not match the dispatched commit '${GITHUB_SHA}'."
+            exit 1
+          fi
+
+          echo "Deployment baseline: ${GITHUB_REF_NAME} @ ${GITHUB_SHA}"
+
+      - name: Record release evidence
+        env:
+          STAGING_EVIDENCE: ${{ inputs.staging_validation_evidence }}
+          CHANGE_REFERENCE: ${{ inputs.change_reference }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STAGING_EVIDENCE}" ] || [ -z "${CHANGE_REFERENCE}" ]; then
+            echo "::error::Staging validation evidence and a change reference are required."
+            exit 1
+          fi
+          {
+            echo "### Production release evidence"
+            echo ""
+            echo "- Release branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Initiated by: \`${GITHUB_ACTOR}\`"
+            echo "- Staging validation evidence: ${STAGING_EVIDENCE}"
+            echo "- Change reference: ${CHANGE_REFERENCE}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------------------------
+  # Revalidate the release baseline WITHOUT any AWS credentials.
+  # -------------------------------------------------------------------------------------------
+  validate:
+    name: Validate release baseline
+    needs: authorize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup Node
+        uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+        with:
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Enable PNPM
+        uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve identifiers from config
+        id: cfg
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID=$(pnpm exec ccoe-config-reader production --configDirName config | jq -r '.aws.accountId')
+
+          if ! printf '%s' "${ACCOUNT_ID}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::aws.accountId missing or malformed after merging config/default.yaml with config/production.yaml (got '${ACCOUNT_ID}')."
+            echo "::error::Populate config/production.yaml with the 12-digit management account ID before authorising Production execution."
+            exit 1
+          fi
+
+          echo "account-id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
+          echo "Resolved production account: ${ACCOUNT_ID}"
+
+      - name: Build (strict TypeScript)
+        run: pnpm run build
+
+      - name: Typecheck tests
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Unit and CDK assertion tests
+        run: pnpm test
+
+      - name: CDK synth (production)
+        run: pnpm run synth:production
+
+      - name: Validate synthesized OU template
+        run: pnpm run validate:ou-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized Identity Center template
+        run: pnpm run validate:identity-center-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized policy template
+        run: pnpm run validate:policy-template -- --environment production --output-dir cdk.out/production
+
+      # Shared-accounts template is validated for repository readiness. The Production deploy job
+      # below intentionally does NOT deploy the SharedAccountsStack in this iteration; Production
+      # shared-account creation is deferred to a separately approved activation change.
+      - name: Validate synthesized shared-accounts template
+        run: pnpm run validate:accounts-template -- --environment production --output-dir cdk.out/production
+
+  # -------------------------------------------------------------------------------------------
+  # Deploy. Requires protected `production` environment approval before it starts.
+  # -------------------------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy OU, Identity Center, and organization policy stacks to Production
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup Node
+        uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+        with:
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Enable PNPM
+        uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Resolve the AWS management account ID from config/production.yaml through the reader
+      # CLI. No GitHub Environment variables are consulted for this identifier.
+      - name: Resolve identifiers from config from production.yaml
+        id: cfg
+        run: |
+          set -euo pipefail
+
+          ACCOUNT_ID=$(pnpm exec ccoe-config-reader production --configDirName config | jq -r '.aws.accountId')
+
+          if ! printf '%s' "${ACCOUNT_ID}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::aws.accountId missing or malformed after merging config/default.yaml with config/production.yaml (got '${ACCOUNT_ID}')."
+            echo "::error::Populate config/production.yaml with the 12-digit management account ID before authorising Production execution."
+            exit 1
+          fi
+
+          echo "account-id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
+          echo "Resolved production account: ${ACCOUNT_ID}"
+
+      # Approved ccoe-aws/reusable-workflows composite action. It derives the deployment role
+      # ARN and OIDC audience from the partition, account ID and role name, and configures the
+      # ESC STS endpoint (sts.eusc-de-east-1.amazonaws.eu) automatically.
+      - name: Configure AWS ESC credentials with OIDC
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: oidc
+          aws-partition: ${{ env.ESC_PARTITION }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-account-id: ${{ steps.cfg.outputs.account-id }}
+          aws-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          aws-session-name: lz-production-ou-${{ github.run_id }}
+
+      # Idempotent detect-or-create for the AWS Organization in the Production management
+      # account. Emits organization-id and organization-root-id as step outputs and, with
+      # ensure-scp-policy-type: 'true' and ensure-rcp-policy-type: 'true', confirms
+      # SERVICE_CONTROL_POLICY and RESOURCE_CONTROL_POLICY are both enabled on the Root before
+      # the policy stack deploys. AWS Organizations does NOT auto-enable any policy type when the
+      # Organization is created with --feature-set ALL; each type must be enabled explicitly.
+      - name: Prepare AWS Organization
+        id: prepare_org
+        uses: ./.github/actions/prepare-organization
+        with:
+          expected-account-id: ${{ steps.cfg.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          ensure-scp-policy-type: 'true'
+          ensure-rcp-policy-type: 'true'
+
+      - name: CDK diff (OU Structure stack)
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ steps.cfg.outputs.account-id }}
+          CDK_DEFAULT_REGION: ${{ env.ESC_REGION }}
+        run: |
+          pnpm exec cdk diff "${OU_STRUCTURE_STACK_ID}" \
+            -c environment=production \
+            --parameters "OrganizationRootId=${{ steps.prepare_org.outputs.organization-root-id }}"
+
+      - name: Deploy OU Structure stack
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ steps.cfg.outputs.account-id }}
+          CDK_DEFAULT_REGION: ${{ env.ESC_REGION }}
+        run: |
+          pnpm exec cdk deploy "${OU_STRUCTURE_STACK_ID}" \
+            -c environment=production \
+            --parameters "OrganizationRootId=${{ steps.prepare_org.outputs.organization-root-id }}" \
+            --require-approval never \
+            --progress events
+
+      - name: Deploy IAM Identity Center
+        id: identity_center
+        uses: ./.github/actions/deploy-identity-center
+        with:
+          environment: production
+          account-id: ${{ steps.cfg.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          permission-sets-stack-id: ${{ env.IDENTITY_CENTER_PERMISSION_SETS_STACK_ID }}
+
+      - name: Post-deployment OU validation
+        env:
+          ORGANIZATION_ROOT_ID: ${{ steps.prepare_org.outputs.organization-root-id }}
+        run: |
+          set -euo pipefail
+
+          STACK_NAME=$(jq -r '
+            [
+              .artifacts | to_entries[]
+              | select(.value.type == "aws:cloudformation:stack")
+              | select(.value.properties.stackName == "lz-ou-structure")
+              | .value.properties.stackName
+            ]
+            | if length == 1 then .[0] else empty end
+          ' cdk.out/manifest.json)
+
+          if [ -z "${STACK_NAME}" ] || [ "${STACK_NAME}" = "null" ]; then
+            echo "::error::Expected exactly one lz-ou-structure artifact in cdk.out/manifest.json."
+            exit 1
+          fi
+          echo "Validating stack: ${STACK_NAME}"
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --region "${ESC_REGION}" \
+            --query 'Stacks[0].StackStatus' --output text)
+          echo "Stack status: ${STATUS}"
+
+          case "${STATUS}" in
+            CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+            *) echo "::error::Unexpected stack status '${STATUS}'."; exit 1 ;;
+          esac
+
+          mapfile -t OU_IDS < <(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --region "${ESC_REGION}" \
+            --query "Stacks[0].Outputs[?starts_with(OutputKey, 'OuId')].OutputValue" \
+            --output text | tr '\t' '\n' | sed '/^$/d')
+
+          echo "Reported organizational units: ${#OU_IDS[@]}"
+          if [ "${#OU_IDS[@]}" -ne 14 ]; then
+            echo "::error::Expected 14 organizational units but the stack reported ${#OU_IDS[@]}."
+            exit 1
+          fi
+
+          for id in "${OU_IDS[@]}"; do
+            if ! printf '%s' "$id" | grep -qE '^ou-[0-9a-z]{4,32}-[0-9a-z]{8,32}$'; then
+              echo "::error::'$id' is not a valid AWS Organizations OU ID."
+              exit 1
+            fi
+          done
+
+          ROOT_CHILDREN=$(aws organizations list-organizational-units-for-parent \
+            --parent-id "${ORGANIZATION_ROOT_ID}" \
+            --region "${ESC_REGION}" \
+            --query 'OrganizationalUnits[].Name' --output text | tr '\t' '\n')
+          echo "OUs directly below Root:"
+          echo "${ROOT_CHILDREN}" | sed 's/^/  - /'
+
+          for expected in Security Infrastructure Sandbox Suspended Workloads; do
+            if ! printf '%s\n' "${ROOT_CHILDREN}" | grep -qx "${expected}"; then
+              echo "::error::Approved top-level OU '${expected}' was not found under the Organizations Root."
+              exit 1
+            fi
+          done
+
+          echo "Post-deployment OU validation passed."
+
+      # -----------------------------------------------------------------------------------------
+      # Organization Policy stack. Deliberately ISOLATED from the OU stack at the CloudFormation
+      # layer: no Fn::Export / Fn::ImportValue link between the two stacks, and no CDK-level
+      # addDependency in bin/landing-zone.ts. Ordering is enforced by this workflow (the OU stack
+      # deploy above completed before this section runs), and the OU IDs the policy stack needs
+      # arrive as pattern-constrained CloudFormation parameters resolved from the OU stack's
+      # OuId* outputs. This is the same pattern already applied to OrganizationRootId and
+      # OrganizationId (both from prepare-organization).
+      #
+      # Neither Root ID, Organization ID nor any OU ID is stored in source config.
+      # -----------------------------------------------------------------------------------------
+      - name: Resolve OU IDs from the deployed OU stack
+        id: resolve_ou_ids
+        env:
+          OU_STACK_NAME: lz-ou-structure
+        run: |
+          set -euo pipefail
+
+          OU_PARAMS_FILE="$RUNNER_TEMP/ou-params"
+          : > "$OU_PARAMS_FILE"
+
+          count=0
+          while IFS=$'\t' read -r OUTPUT_KEY OUTPUT_VALUE; do
+            if [ -z "${OUTPUT_KEY}" ] || [ -z "${OUTPUT_VALUE}" ]; then
+              continue
+            fi
+            # Refuse a value that is not a real AWS Organizations OU ID; without this a malformed
+            # output would silently reach cdk deploy and fail the pattern check on the parameter.
+            if ! printf '%s' "${OUTPUT_VALUE}" | grep -qE '^ou-[0-9a-z]{4,32}-[0-9a-z]{8,32}$'; then
+              echo "::error::OU stack output '${OUTPUT_KEY}' has value '${OUTPUT_VALUE}', which is not a valid AWS Organizations OU ID."
+              exit 1
+            fi
+            printf -- '--parameters\n%s=%s\n' "${OUTPUT_KEY}" "${OUTPUT_VALUE}" >> "$OU_PARAMS_FILE"
+            count=$((count + 1))
+          done < <(aws cloudformation describe-stacks \
+            --stack-name "${OU_STACK_NAME}" \
+            --region "${ESC_REGION}" \
+            --query 'Stacks[0].Outputs[?starts_with(OutputKey, `OuId`)].[OutputKey,OutputValue]' \
+            --output text)
+
+          if [ "${count}" -ne 14 ]; then
+            echo "::error::Expected 14 OuId* outputs on ${OU_STACK_NAME} but resolved ${count}. Refusing to deploy the policy stack against a partially-formed OU hierarchy."
+            exit 1
+          fi
+
+          echo "ou-params-file=${OU_PARAMS_FILE}" >> "$GITHUB_OUTPUT"
+          echo "Resolved ${count} OuId* parameters from ${OU_STACK_NAME}:"
+          cat "$OU_PARAMS_FILE"
+
+      - name: CDK diff (Organization Policy stack)
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ steps.cfg.outputs.account-id }}
+          CDK_DEFAULT_REGION: ${{ env.ESC_REGION }}
+          OU_PARAMS_FILE: ${{ steps.resolve_ou_ids.outputs.ou-params-file }}
+        run: |
+          set -euo pipefail
+          mapfile -t OU_PARAMS < "$OU_PARAMS_FILE"
+          pnpm exec cdk diff "${ORGANIZATION_POLICY_STACK_ID}" \
+            -c environment=production \
+            --exclusively \
+            --parameters "OrganizationRootId=${{ steps.prepare_org.outputs.organization-root-id }}" \
+            --parameters "OrganizationId=${{ steps.prepare_org.outputs.organization-id }}" \
+            "${OU_PARAMS[@]}"
+
+      - name: Deploy Organization Policy stack
+        env:
+          CDK_DEFAULT_ACCOUNT: ${{ steps.cfg.outputs.account-id }}
+          CDK_DEFAULT_REGION: ${{ env.ESC_REGION }}
+          OU_PARAMS_FILE: ${{ steps.resolve_ou_ids.outputs.ou-params-file }}
+        run: |
+          set -euo pipefail
+          mapfile -t OU_PARAMS < "$OU_PARAMS_FILE"
+          pnpm exec cdk deploy "${ORGANIZATION_POLICY_STACK_ID}" \
+            -c environment=production \
+            --exclusively \
+            --parameters "OrganizationRootId=${{ steps.prepare_org.outputs.organization-root-id }}" \
+            --parameters "OrganizationId=${{ steps.prepare_org.outputs.organization-id }}" \
+            "${OU_PARAMS[@]}" \
+            --require-approval never \
+            --progress events
+
+      - name: Post-deployment policy validation
+        env:
+          ORGANIZATION_ROOT_ID: ${{ steps.prepare_org.outputs.organization-root-id }}
+        run: |
+          set -euo pipefail
+
+          POLICY_STACK_NAME=$(jq -r '
+            .artifacts | to_entries[]
+            | select(.value.type == "aws:cloudformation:stack")
+            | select(.value.properties.stackName == "lz-organization-policies")
+            | .value.properties.stackName
+          ' cdk.out/manifest.json | head -n 1)
+
+          if [ -z "${POLICY_STACK_NAME}" ] || [ "${POLICY_STACK_NAME}" = "null" ]; then
+            echo "::error::Unable to determine the organization policy stack name from cdk.out/manifest.json."
+            exit 1
+          fi
+          echo "Validating policy stack: ${POLICY_STACK_NAME}"
+
+          POLICY_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${POLICY_STACK_NAME}" \
+            --region "${ESC_REGION}" \
+            --query 'Stacks[0].StackStatus' --output text)
+          echo "Policy stack status: ${POLICY_STATUS}"
+
+          case "${POLICY_STATUS}" in
+            CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+            *) echo "::error::Unexpected policy stack status '${POLICY_STATUS}'."; exit 1 ;;
+          esac
+
+          # SERVICE_CONTROL_POLICY and RESOURCE_CONTROL_POLICY must both be ENABLED on the Root
+          # for SCP and RCP creation to have succeeded. Neither type is auto-enabled by
+          # create-organization --feature-set ALL; prepare-organization enables them explicitly.
+          # JMESPath: unwrap the filtered Roots projection with `| [0]` before descending into
+          # PolicyTypes. Without the unwrap, --output text returns 'None' even when the policy
+          # type is ENABLED (same fix as prepare-organization/action.yaml).
+          SCP_STATUS=$(aws organizations list-roots \
+            --region "${ESC_REGION}" \
+            --query "Roots[?Id=='${ORGANIZATION_ROOT_ID}'] | [0].PolicyTypes[?Type=='SERVICE_CONTROL_POLICY'].Status | [0]" \
+            --output text)
+          echo "SERVICE_CONTROL_POLICY status on Root: ${SCP_STATUS}"
+          if [ "${SCP_STATUS}" != "ENABLED" ]; then
+            echo "::error::SERVICE_CONTROL_POLICY is not ENABLED on Root ${ORGANIZATION_ROOT_ID} (status '${SCP_STATUS}')."
+            exit 1
+          fi
+
+          RCP_STATUS=$(aws organizations list-roots \
+            --region "${ESC_REGION}" \
+            --query "Roots[?Id=='${ORGANIZATION_ROOT_ID}'] | [0].PolicyTypes[?Type=='RESOURCE_CONTROL_POLICY'].Status | [0]" \
+            --output text)
+          echo "RESOURCE_CONTROL_POLICY status on Root: ${RCP_STATUS}"
+          if [ "${RCP_STATUS}" != "ENABLED" ]; then
+            echo "::error::RESOURCE_CONTROL_POLICY is not ENABLED on Root ${ORGANIZATION_ROOT_ID} (status '${RCP_STATUS}')."
+            exit 1
+          fi
+
+          UNEXPECTED_TYPES=$(aws cloudformation describe-stack-resources \
+            --stack-name "${POLICY_STACK_NAME}" --region "${ESC_REGION}" \
+            --query 'StackResources[].ResourceType' --output text \
+            | tr '\t' '\n' | grep -vx 'AWS::Organizations::Policy' | grep -v '^$' || true)
+          if [ -n "${UNEXPECTED_TYPES}" ]; then
+            echo "::error::The organization policy stack contains unexpected resource types:"
+            printf '  - %s\n' ${UNEXPECTED_TYPES}
+            exit 1
+          fi
+
+          if aws cloudformation describe-stack-resources \
+               --stack-name "${POLICY_STACK_NAME}" --region "${ESC_REGION}" \
+               --query 'StackResources[?ResourceType==`AWS::Organizations::Account`].LogicalResourceId' \
+               --output text | grep -q .; then
+            echo "::error::The organization policy stack contains AWS::Organizations::Account resources."
+            exit 1
+          fi
+
+          if aws cloudformation describe-stacks \
+               --stack-name "${POLICY_STACK_NAME}" --region "${ESC_REGION}" \
+               --query 'Stacks[0].Outputs' --output json \
+             | jq -r '.[].Description // ""' \
+             | grep -qE '\b[0-9]{12}\b'; then
+            echo "::error::Organization policy stack outputs mention a 12-digit account ID. Account-level attachment is deferred."
+            exit 1
+          fi
+
+          echo "Post-deployment policy validation passed."
+
+      # -----------------------------------------------------------------------------------------
+      # Production shared-account creation is DEFERRED by design in this iteration.
+      #
+      # The SharedAccountsStack is validated for repository readiness in the `validate` job above
+      # (synth + template validation), but this workflow does NOT invoke `cdk deploy` against it.
+      # Production shared-account activation is a separately approved change per
+      # `.apm/instructions/shared-account-provisioning.instructions.md` §14 ("Do not invoke any
+      # Production deployment workflow/action. Do not create Production Audit or Log Archive
+      # accounts.") and the corresponding skill.
+      #
+      # If a future PR wires deployment here, the pattern must mirror the Staging workflow:
+      #   1. describe-stacks against lz-ou-structure to resolve OuIdSecurity.
+      #   2. cdk deploy SharedAccountsStack --exclusively --parameters "OuIdSecurity=<id>".
+      #   3. Post-deploy validation identical to Staging.
+      # -----------------------------------------------------------------------------------------
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Production deployment"
+            echo ""
+            echo "- Source branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Configuration: \`config/production.yaml\`"
+            echo "- Region: \`${ESC_REGION}\`"
+            echo "- Stacks deployed: \`${OU_STRUCTURE_STACK_ID}\`, \`${IDENTITY_CENTER_PERMISSION_SETS_STACK_ID}\`, \`${ORGANIZATION_POLICY_STACK_ID}\` (OU/policy stacks deployed independently; no CloudFormation Export / Fn::ImportValue)"
+            echo "- IAM Identity Center instance: ${{ steps.identity_center.outputs.instance-arn }}"
+            echo "- IAM Identity Center runtime reconciliation: see job result (10 Permission Sets, zero assignments expected)"
+            echo "- Expected OUs: 14"
+            echo "- OU IDs threaded to policy stack: 14 (as \`OuId*\` CloudFormation parameters)"
+            echo "- SCP policy-type status: \`${{ steps.prepare_org.outputs.service-control-policy-status }}\`"
+            echo "- RCP policy-type status: \`${{ steps.prepare_org.outputs.resource-control-policy-status }}\`"
+            echo "- Deployment hold: none (config/default.yaml governance.disabledPolicies is empty)"
+            echo "- Account-level attachments: none (deferred)"
+            echo "- Shared accounts (Audit / Log Archive): NOT deployed to Production in this iteration; \`${SHARED_ACCOUNTS_STACK_ID}\` was synthesized and validated for readiness only"
+            echo "- Bootstrap executed: no"
+            echo "- Long-lived credentials used: no (GitHub OIDC only)"
+            echo ""
+            echo "Create the immutable SemVer Git tag only after successful Production validation."
+          } >> "$GITHUB_STEP_SUMMARY"

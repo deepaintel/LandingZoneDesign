@@ -1,0 +1,106 @@
+name: deploy-identity-center
+description: >
+  Discover the IAM Identity Center organization instance and deploy the Permission Sets stack for
+  the given environment, then reconcile the deployed Permission Set baseline against live IAM
+  Identity Center state.
+  Requires AWS credentials to be configured before this action runs, and the AWS Organization to
+  already exist in the target account (see the prepare-organization composite action).
+inputs:
+  environment:
+    description: Target environment (staging or production).
+    required: true
+  account-id:
+    description: 12-digit AWS account ID the CDK stacks deploy into.
+    required: true
+  aws-region:
+    description: AWS region for CloudFormation and IAM Identity Center API calls.
+    required: false
+    default: eusc-de-east-1
+  permission-sets-stack-id:
+    description: CDK construct ID of the IAM Identity Center Permission Sets stack.
+    required: false
+    default: IdentityCenterPermissionSetsStack
+outputs:
+  instance-arn:
+    description: ARN of the discovered IAM Identity Center organization instance.
+    value: ${{ steps.instance.outputs.instance-arn }}
+  identity-store-id:
+    description: Identity Store ID of the discovered IAM Identity Center organization instance.
+    value: ${{ steps.instance.outputs.identity-store-id }}
+runs:
+  using: composite
+  steps:
+    - id: instance
+      name: Discover IAM Identity Center organization instance
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        EXPECTED_ACCOUNT_ID: ${{ inputs.account-id }}
+        TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+
+        INSTANCES=$(aws sso-admin list-instances \
+          --region "${ESC_REGION}" \
+          --output json)
+        MATCHING_INSTANCES=$(printf '%s' "${INSTANCES}" | jq --arg account_id "${EXPECTED_ACCOUNT_ID}" '[.Instances[] | select(.Status == "ACTIVE" and .OwnerAccountId == $account_id)]')
+        INSTANCE_COUNT=$(printf '%s' "${MATCHING_INSTANCES}" | jq 'length')
+        if [ "${INSTANCE_COUNT}" -ne 1 ]; then
+          if [ "${INSTANCE_COUNT}" -eq 0 ]; then
+            echo "::error::No active IAM Identity Center organization instance was found for ${TARGET_ENVIRONMENT}. An authorized operator must enable IAM Identity Center for the AWS Organization once before this workflow can continue."
+            {
+              echo "## IAM Identity Center prerequisite"
+              echo ""
+              echo "No active organization instance was found for **${TARGET_ENVIRONMENT}** in **${ESC_REGION}**."
+              echo ""
+              echo "An authorized operator must enable IAM Identity Center for this AWS Organization through the AWS Console. The workflow will discover the instance on the next run; it does not create one."
+              echo ""
+              echo "After enablement, verify with: \\`aws sso-admin list-instances --region ${ESC_REGION}\\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::error::Expected exactly one active IAM Identity Center organization instance, found ${INSTANCE_COUNT}."
+          fi
+          exit 1
+        fi
+
+        INSTANCE_ARN=$(printf '%s' "${MATCHING_INSTANCES}" | jq -r '.[0].InstanceArn')
+        IDENTITY_STORE_ID=$(printf '%s' "${MATCHING_INSTANCES}" | jq -r '.[0].IdentityStoreId')
+        if [ -z "${INSTANCE_ARN}" ] || [ "${INSTANCE_ARN}" = "null" ] \
+          || [ -z "${IDENTITY_STORE_ID}" ] || [ "${IDENTITY_STORE_ID}" = "null" ]; then
+          echo "::error::The discovered IAM Identity Center instance did not include InstanceArn and IdentityStoreId."
+          exit 1
+        fi
+
+        echo "instance-arn=${INSTANCE_ARN}" >> "$GITHUB_OUTPUT"
+        echo "identity-store-id=${IDENTITY_STORE_ID}" >> "$GITHUB_OUTPUT"
+        echo "Discovered IAM Identity Center organization instance: ${INSTANCE_ARN}"
+        echo "Discovered IAM Identity Store: ${IDENTITY_STORE_ID}"
+
+    - name: CDK diff (Identity Center Permission Sets stack)
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+      run: |
+        pnpm exec cdk diff "${{ inputs.permission-sets-stack-id }}" \
+          -c environment=${{ inputs.environment }} \
+          --parameters "IdentityCenterInstanceArn=${{ steps.instance.outputs.instance-arn }}"
+
+    - name: Deploy Identity Center Permission Sets stack
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+      run: |
+        pnpm exec cdk deploy "${{ inputs.permission-sets-stack-id }}" \
+          -c environment=${{ inputs.environment }} \
+          --parameters "IdentityCenterInstanceArn=${{ steps.instance.outputs.instance-arn }}" \
+          --require-approval never \
+          --progress events
+
+    # - name: Reconcile IAM Identity Center runtime state
+    #   shell: bash
+    #   run: |
+    #     pnpm run validate:identity-center-runtime -- \
+    #       --environment "${{ inputs.environment }}" \
+    #       --instance-arn "${{ steps.instance.outputs.instance-arn }}"
