@@ -40,7 +40,7 @@ Do not:
 - broaden an approved control
 - weaken an approved control
 - infer undocumented targets
-- infer undocumented exemptions
+- infer undocumented exemptions, **except where a later approved, purpose-specific instruction explicitly authorizes a scoped compatibility exemption**
 - create additional SCPs merely to improve framework coverage
 - claim derived policy JSON was copied directly from the catalogue
 
@@ -122,6 +122,46 @@ The CDK application must NOT:
 - introduce `Fn::ImportValue`, cross-account SSM Parameter Store lookups, or any other runtime cross-stack coupling mechanism
 
 Local synthesis, unit tests and the static template validator must fail on any `Fn::ImportValue` or `Fn::Export` appearing between these two stacks.
+
+---
+
+## Control Tower Compatibility Update Boundary
+
+A separate approved implementation phase may modify existing SCP statements to support AWS Control Tower initialization and lifecycle operations.
+
+The authoritative instruction for that phase is:
+
+- `.apm/instructions/control-tower-scp-compatibility.instructions.md`
+
+and the implementation workflow is defined in:
+
+- `.apm/skills/update-scp-for-control-tower/SKILL.md`
+
+When that instruction is active, agents are explicitly permitted to modify the existing in-scope SCP code, configuration, schema, tests, and static validators required to introduce the approved Control Tower compatibility changes.
+
+This permission is limited to the policies and change boundaries defined by the Control Tower compatibility instruction.
+
+For this approved phase:
+
+- a narrowly scoped Control Tower principal exemption is **not** treated as an unauthorized weakening of a control when it is required by and implemented in accordance with the approved Control Tower compatibility instruction
+- Control Tower principal exemptions may be added even when they were not present in the original SCP design catalogue, because the later compatibility instruction is the approved ruling for this specific interoperability requirement
+- the original deny/control intent must remain effective for non-exempt principals
+- policy IDs, names and approved Root / OU targets must remain unchanged unless the compatibility instruction explicitly states otherwise
+- agents must not create replacement/duplicate SCPs when an existing policy can be safely updated
+- agents must not broaden the exemption beyond the Control Tower principals/actions required for the affected statement
+- agents must continue to stop and report any ambiguity that cannot be resolved from the approved compatibility instruction, repository implementation, or validated AWS ESC behaviour
+
+The generic rule against inferring undocumented exemptions therefore does **not** block the explicitly approved Control Tower compatibility work. It continues to apply to all other SCP changes.
+
+This compatibility phase is code/configuration/test preparation only unless deployment is separately authorized. It does not authorize:
+
+- `cdk deploy`
+- live Organizations mutations
+- Control Tower initialization
+- OU changes
+- account creation
+- workload-enrollment SCP changes outside the approved compatibility scope
+- RCP changes
 
 ---
 
@@ -359,6 +399,8 @@ Agents must not autonomously:
 - create AWS accounts as part of SCP work
 - trigger GitHub Actions deployment workflows
 - commit, push, merge or rebase repository changes unless explicitly authorized
+
+Agents **may modify SCP implementation code, configuration, schema, tests, and static validators** when the change is governed by an approved SCP instruction such as `.apm/instructions/control-tower-scp-compatibility.instructions.md`. This permission is for repository changes and non-deploying validation only; it does not authorize live AWS mutation.
 
 Local synthesis and tests are validation only and must not mutate AWS.
 
