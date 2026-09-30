@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { ConfigReader } from '@ccoe-aws_if-it/ccoe-config-reader';
+
 import {
   DATA_CLASSIFICATION_VALUES,
   ENVIRONMENT_VALUES,
@@ -7,6 +9,7 @@ import {
   LIFECYCLE_VALUES,
   landingZoneAccountsSchema
 } from '../config/schemas/landing-zone-accounts-schema.js';
+import { LandingZoneSchema } from '../config/schemas/organization-schema.js';
 
 const CLOUD_APPLICATION_PLATFORM = 'Cloud Application Platform';
 
@@ -183,6 +186,47 @@ describe('landingZoneAccountsSchema', () => {
       })
     });
     expect(result.success).toBe(true);
+  });
+
+  it('loads the final customer-confirmed Staging inventory of nine accounts', () => {
+    const config = new ConfigReader('staging', {
+      configDirName: 'config',
+      schema: LandingZoneSchema
+    }).getConfig();
+    const accounts = config.landingZoneAccounts;
+
+    expect(Object.keys(accounts)).toHaveLength(9);
+    const hybridNonProd = accounts.ccoeHybridNonProd01;
+    expect(hybridNonProd).toBeDefined();
+    if (hybridNonProd === undefined) {
+      throw new Error('Expected ccoeHybridNonProd01 in the final Staging account inventory.');
+    }
+    expect(hybridNonProd.email).toBe('FMITaws-cloud-org-002+CCoE-Hybrid-NonProd-01@if.se');
+
+    const expectedEnvironmentByKey = {
+      securityTooling: 'prod',
+      sharedServices: 'prod',
+      network: 'prod',
+      ccoeHybridProd01: 'prod',
+      ccoeHybridNonProd01: 'staging',
+      ccoeOnlineProd01: 'prod',
+      ccoeOnlineNonProd01: 'staging',
+      ccoeCorpProd01: 'prod',
+      ccoeCorpNonProd01: 'staging'
+    } as const;
+
+    for (const [key, expectedEnvironment] of Object.entries(expectedEnvironmentByKey)) {
+      const account = accounts[key];
+      expect(account, key).toBeDefined();
+      if (account === undefined) {
+        throw new Error(`Expected '${key}' in the final Staging account inventory.`);
+      }
+      expect(account.tags.environment, `${key} environment`).toBe(expectedEnvironment);
+      expect(account.tags.lifecycle, `${key} lifecycle`).toBe('active');
+      expect(account.tags.dataClassification, `${key} dataClassification`).toBe('internal');
+      expect(account.tags.dataResidency, `${key} dataResidency`).toBe('EU');
+      expect(account.tags.domain, `${key} domain`).toBe(CLOUD_APPLICATION_PLATFORM);
+    }
   });
 
   it('exposes the customer-approved enumerations for reuse', () => {

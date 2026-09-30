@@ -48,12 +48,15 @@ accounts:
 # `@ccoe-aws_if-it/ccoe-config-reader` + the `landingZoneAccountsSchema` block of
 # `LandingZoneSchema`.
 #
-# Active accounts (8): SecurityTooling, SharedServices, Network, and the CCoE-* validation
-# accounts EXCLUDING `CCoE-Hybrid-NonProd-01`. That account is deliberately absent while its
-# workbook `Account Email` remains unresolved (§3.4 Hydrid/Hybrid discrepancy - the workbook
-# contains `+CCoE-Hydrid-NonProd-01@if.se`, which must not be silently corrected). Once the
-# customer confirms the authoritative Account Email, adding a normal entry under
-# `landingZoneAccounts.ccoeHybridNonProd01:` here is sufficient - no code change required.
+# Active accounts (9): SecurityTooling, SharedServices, Network, and all six CCoE-* validation
+# accounts. IF has confirmed the CCoE-Hybrid-NonProd-01 email as
+# `FMITaws-cloud-org-002+CCoE-Hybrid-NonProd-01@if.se`; the earlier email discrepancy is closed.
+#
+# ALL entries in this block are provisioned only in the Staging AWS Organization. The P1
+# `environment` value is an account/tag classification and does not select the AWS Organization.
+# Customer-confirmed values are explicit per account: platform accounts and Workloads/*/Prod use
+# `environment: prod`; Workloads/*/Non-Prod use `environment: staging`; all nine accounts use
+# `lifecycle: active` and `dataClassification: internal`.
 #
 # Authoritative mappings (see §6.1 and §9):
 #   Owner / Team  -> owner
@@ -63,17 +66,6 @@ accounts:
 # they are NOT separate configuration inputs. `data-residency` is fixed to `EU`. `domain` is the
 # customer-confirmed literal `Cloud Application Platform` for every current LZ account per §8.1
 # and is sourced from configuration (never hard-coded in TypeScript / CDK).
-#
-# TEMPORARY VALUES REQUIRING CUSTOMER CONFIRMATION BEFORE RELEASE DEPLOYMENT:
-#   `tags.environment: staging`, `tags.lifecycle: active`, and
-#   `tags.dataClassification: internal` are TEMPORARY per-account configuration values used to
-#   satisfy the mandatory P1 schema during the current implementation / review. They are NOT
-#   schema defaults or code-level defaults; the schema continues to enforce the full approved
-#   enumerations (`prod`|`staging`|`dev`|`sandbox`, `active`|`deprecated`|`decommissioning`|
-#   `archived`, `public`|`internal`|`confidential`|`restricted`). Each of these three values
-#   MUST be reconfirmed with IF and replaced per account before release-branch deployment; the
-#   subsequent change will edit only these three tag values in this file, no code change is
-#   required.
 # ---------------------------------------------------------------------------------------------
 landingZoneAccounts:
   securityTooling:
@@ -85,9 +77,9 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'cloud@if.eu'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
   sharedServices:
@@ -99,9 +91,9 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'cloud@if.eu'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
   network:
@@ -113,9 +105,9 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'network-hub@if.fi'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
   ccoeHybridProd01:
@@ -127,9 +119,23 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'cloud@if.eu'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
+      dataResidency: EU
+      domain: Cloud Application Platform
+  ccoeHybridNonProd01:
+    name: 'CCoE-Hybrid-NonProd-01'
+    email: 'FMITaws-cloud-org-002+CCoE-Hybrid-NonProd-01@if.se'
+    ouPath: 'Workloads/Hybrid/Non-Prod'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
   ccoeOnlineProd01:
@@ -141,9 +147,9 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'cloud@if.eu'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
   ccoeOnlineNonProd01:
@@ -155,9 +161,9 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'cloud@if.eu'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: staging
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
   ccoeCorpProd01:
@@ -169,9 +175,9 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'cloud@if.eu'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
   ccoeCorpNonProd01:
@@ -183,9 +189,9 @@ landingZoneAccounts:
     securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
     operationsContact: 'cloud@if.eu'
     tags:
-      environment: staging # TEMPORARY - reconfirm with IF before release deployment
-      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
-      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      environment: staging
+      lifecycle: active
+      dataClassification: internal
       dataResidency: EU
       domain: Cloud Application Platform
 
