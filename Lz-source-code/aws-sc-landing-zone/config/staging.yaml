@@ -1,0 +1,222 @@
+# ---------------------------------------------------------------------------------------------
+# Staging AWS Organization - ACTIVE deployment configuration for the OU implementation phase.
+#
+# Deployment source: protected release/* branch only (staging-deploy.yml).
+#
+# Loading: this file is loaded via @ccoe-aws_if-it/ccoe-config-reader used as a generic YAML
+# loader library by ConfigReader with LandingZoneSchema.
+#
+# The AWS Organizations Root is NEVER created by CDK application code. Its lifecycle is handled
+# by the prepare-organization composite action (.github/actions/prepare-organization) at deploy
+# time: idempotent detect-or-create, Root ID emitted as a step output and fed to `cdk deploy`
+# via the OrganizationRootId CloudFormation parameter. No Root ID is stored in this file or
+# anywhere else in source control.
+#
+# aws.accountId is the AWS Organizations management account ID (a 12-digit identifier, not a
+# credential). It may live here under the compensating controls documented in CLAUDE.md §14.
+# No access keys, secret access keys, IAM user credentials, bearer tokens, or role ARNs are
+# stored in this file.
+# ---------------------------------------------------------------------------------------------
+aws:
+  # Staging AWS Organizations management account (aws-cloud-org-002).
+  accountId: '118669550429'
+
+identityCenter:
+  instanceName: aws-esc-landing-zone-staging
+  scim:
+    checkForScimSync: 172800 # 48 hours
+  scimCleanup:
+    checkForScimCleanup: 172800 # 48 hours
+
+# Shared-account per-environment overrides. Names / OU / owner / costCentre / operationsContact
+# come from config/default.yaml. Only email and securityContact differ between environments; both
+# are declared here so a merge conflict inside default.yaml can never silently supply the wrong
+# staging email. Emails are unique AWS account identifiers - CreateAccount rejects duplicates.
+accounts:
+  logArchive:
+    email: 'FMITaws-cloud-org-002+LogArchive@if.se'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+  audit:
+    email: 'FMITaws-cloud-org-002+Audit@if.se'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+
+# ---------------------------------------------------------------------------------------------
+# Landing Zone platform + CCoE validation accounts for Staging.
+#
+# Governed by `.apm/instructions/landing-zone-account-provisioning.instructions.md` and
+# `.apm/skills/generate-account/SKILL.md`. Loaded by `LandingZoneAccountsStack` via
+# `@ccoe-aws_if-it/ccoe-config-reader` + the `landingZoneAccountsSchema` block of
+# `LandingZoneSchema`.
+#
+# Active accounts (8): SecurityTooling, SharedServices, Network, and the CCoE-* validation
+# accounts EXCLUDING `CCoE-Hybrid-NonProd-01`. That account is deliberately absent while its
+# workbook `Account Email` remains unresolved (§3.4 Hydrid/Hybrid discrepancy - the workbook
+# contains `+CCoE-Hydrid-NonProd-01@if.se`, which must not be silently corrected). Once the
+# customer confirms the authoritative Account Email, adding a normal entry under
+# `landingZoneAccounts.ccoeHybridNonProd01:` here is sufficient - no code change required.
+#
+# Authoritative mappings (see §6.1 and §9):
+#   Owner / Team  -> owner
+#   Account Email -> owner-email
+#   Cost Centre   -> itsystemcode
+# `owner`, `owner-email`, and `itsystemcode` are derived at synth time from the fields below;
+# they are NOT separate configuration inputs. `data-residency` is fixed to `EU`. `domain` is the
+# customer-confirmed literal `Cloud Application Platform` for every current LZ account per §8.1
+# and is sourced from configuration (never hard-coded in TypeScript / CDK).
+#
+# TEMPORARY VALUES REQUIRING CUSTOMER CONFIRMATION BEFORE RELEASE DEPLOYMENT:
+#   `tags.environment: staging`, `tags.lifecycle: active`, and
+#   `tags.dataClassification: internal` are TEMPORARY per-account configuration values used to
+#   satisfy the mandatory P1 schema during the current implementation / review. They are NOT
+#   schema defaults or code-level defaults; the schema continues to enforce the full approved
+#   enumerations (`prod`|`staging`|`dev`|`sandbox`, `active`|`deprecated`|`decommissioning`|
+#   `archived`, `public`|`internal`|`confidential`|`restricted`). Each of these three values
+#   MUST be reconfirmed with IF and replaced per account before release-branch deployment; the
+#   subsequent change will edit only these three tag values in this file, no code change is
+#   required.
+# ---------------------------------------------------------------------------------------------
+landingZoneAccounts:
+  securityTooling:
+    name: 'SecurityTooling'
+    email: 'FMITaws-cloud-org-002+SecurityTooling@if.se'
+    ouPath: 'Security'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+  sharedServices:
+    name: 'SharedServices'
+    email: 'FMITaws-cloud-org-002+SharedServices@if.se'
+    ouPath: 'Infrastructure'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+  network:
+    name: 'Network'
+    email: 'FMITaws-cloud-org-002+Network@if.se'
+    ouPath: 'Infrastructure'
+    owner: 'Connectivity'
+    costCentre: 'AISCCNO'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'network-hub@if.fi'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+  ccoeHybridProd01:
+    name: 'CCoE-Hybrid-Prod-01'
+    email: 'FMITaws-cloud-org-002+CCoE-Hybrid-Prod-01@if.se'
+    ouPath: 'Workloads/Hybrid/Prod'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+  ccoeOnlineProd01:
+    name: 'CCoE-Online-Prod-01'
+    email: 'FMITaws-cloud-org-002+CCoE-Online-Prod-01@if.se'
+    ouPath: 'Workloads/Online/Prod'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+  ccoeOnlineNonProd01:
+    name: 'CCoE-Online-NonProd-01'
+    email: 'FMITaws-cloud-org-002+CCoE-Online-NonProd-01@if.se'
+    ouPath: 'Workloads/Online/Non-Prod'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+  ccoeCorpProd01:
+    name: 'CCoE-Corp-Prod-01'
+    email: 'FMITaws-cloud-org-002+CCoE-Corp-Prod-01@if.se'
+    ouPath: 'Workloads/Corp/Prod'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+  ccoeCorpNonProd01:
+    name: 'CCoE-Corp-NonProd-01'
+    email: 'FMITaws-cloud-org-002+CCoE-Corp-NonProd-01@if.se'
+    ouPath: 'Workloads/Corp/Non-Prod'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    securityContact: 'FMITaws-cloud-org-002+SecurityContact@if.se'
+    operationsContact: 'cloud@if.eu'
+    tags:
+      environment: staging # TEMPORARY - reconfirm with IF before release deployment
+      lifecycle: active # TEMPORARY - reconfirm with IF before release deployment
+      dataClassification: internal # TEMPORARY - reconfirm with IF before release deployment
+      dataResidency: EU
+      domain: Cloud Application Platform
+
+# ---------------------------------------------------------------------------------------------
+# Control Tower Landing Zone 4.0 - Staging retention overrides.
+#
+# Overrides the shared baseline in config/default.yaml. Retention is set explicitly on BOTH
+# integrations (centralizedLogging AND config) because LZ 4.0 uses dedicated resources for
+# CloudTrail-centered centralized logging and for AWS Config. Retention on one does not imply
+# retention on the other.
+#
+# `kmsKeyArn` is DELIBERATELY OMITTED from both `centralizedLogging.configurations` and
+# `config.configurations`. AWS Control Tower applies its standard/default encryption
+# configuration when omitted.
+#
+# Staging retention values:
+#   centralizedLogging.configurations.loggingBucket.retentionDays        : 180
+#   centralizedLogging.configurations.accessLoggingBucket.retentionDays  : 180
+#   config.configurations.loggingBucket.retentionDays                    : 180
+#   config.configurations.accessLoggingBucket.retentionDays              : 180
+# ---------------------------------------------------------------------------------------------
+controlTower:
+  centralizedLogging:
+    configurations:
+      loggingBucket:
+        retentionDays: 180
+      accessLoggingBucket:
+        retentionDays: 180
+  config:
+    configurations:
+      loggingBucket:
+        retentionDays: 180
+      accessLoggingBucket:
+        retentionDays: 180

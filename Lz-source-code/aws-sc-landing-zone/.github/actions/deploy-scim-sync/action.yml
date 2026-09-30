@@ -1,0 +1,145 @@
+name: deploy-scim-sync
+description: >
+  Deploy the SCIM synchronization state machine stack (`lz-scim-sync`) that reconciles Entra ID
+  SCIM group state against IAM Identity Center account assignments, and run the post-deployment
+  runtime validation (stack status, expected AWS::Lambda::Function / AWS::StepFunctions::StateMachine
+  / AWS::Events::Rule resource types with counts matching `scripts/validate-scim-sync-template.ts`).
+  Reused by staging-deploy.yml and production-deploy.yml per
+  `.apm/instructions/landing-zone-identity-center-governance.instructions.md` — "SCIM Sync
+  Deployment Composite Action" — and the shared architecture in
+  `.apm/instructions/landing-zone-ou-governance.instructions.md` §22.
+  Requires AWS credentials to be configured before this action runs (typically via the reusable
+  `aws-credentials` composite action). Does not implement, replace, or govern the Entra ID -> IAM
+  Identity Center SCIM 2.0 protocol; only deploys the AWS-side state machine.
+inputs:
+  environment:
+    description: Target environment (`staging` or `production`). Passed to `cdk` via `-c environment=...`.
+    required: true
+  account-id:
+    description: 12-digit AWS account ID the CDK stack deploys into. Sets `CDK_DEFAULT_ACCOUNT`.
+    required: true
+  aws-region:
+    description: AWS region for CloudFormation API calls.
+    required: false
+    default: eusc-de-east-1
+  stack-id:
+    description: CDK construct ID of the SCIM synchronization stack.
+    required: false
+    default: ScimSyncStack
+  scim-sync-stack-name:
+    description: CloudFormation stack name of the SCIM synchronization stack.
+    required: false
+    default: lz-scim-sync
+  diff-continue-on-error:
+    description: >
+      When `'true'`, a non-zero `cdk diff` exit code does not fail the step. Preserves the
+      pre-refactor behavior where Staging's diff is advisory (`'true'`) and Production's diff
+      is strict (`'false'`).
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: CDK diff (SCIM synchronization stack)
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        DIFF_CONTINUE_ON_ERROR: ${{ inputs.diff-continue-on-error }}
+      run: |
+        set +e
+        pnpm exec cdk diff "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively
+        rc=$?
+        if [ "${DIFF_CONTINUE_ON_ERROR}" = "true" ] && [ "${rc}" -ne 0 ]; then
+          echo "::warning::cdk diff for ${STACK_ID} exited with ${rc}; continuing because diff-continue-on-error=true (advisory)."
+          exit 0
+        fi
+        exit "${rc}"
+
+    - name: Deploy SCIM synchronization stack
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+      run: |
+        pnpm exec cdk deploy "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively \
+          --require-approval never \
+          --progress events
+
+    - name: Post-deployment SCIM sync validation
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        SCIM_SYNC_STACK_NAME_INPUT: ${{ inputs.scim-sync-stack-name }}
+      run: |
+        set -euo pipefail
+
+        SCIM_STACK_NAME=$(jq -r --arg name "${SCIM_SYNC_STACK_NAME_INPUT}" '
+          .artifacts | to_entries[]
+          | select(.value.type == "aws:cloudformation:stack")
+          | select(.value.properties.stackName == $name)
+          | .value.properties.stackName
+        ' cdk.out/manifest.json | head -n 1)
+
+        if [ -z "${SCIM_STACK_NAME}" ] || [ "${SCIM_STACK_NAME}" = "null" ]; then
+          echo "::error::Unable to determine the SCIM synchronization stack name from cdk.out/manifest.json."
+          exit 1
+        fi
+        echo "Validating SCIM synchronization stack: ${SCIM_STACK_NAME}"
+
+        STATUS=$(aws cloudformation describe-stacks \
+          --stack-name "${SCIM_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query 'Stacks[0].StackStatus' --output text)
+        echo "Stack status: ${STATUS}"
+
+        case "${STATUS}" in
+          CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+          *) echo "::error::Unexpected SCIM synchronization stack status '${STATUS}'."; exit 1 ;;
+        esac
+
+        # 1. The SCIM sync stack must not contain any AWS::Organizations::* resources. It
+        #    deploys the runtime state machine only.
+        if aws cloudformation describe-stack-resources \
+             --stack-name "${SCIM_STACK_NAME}" --region "${ESC_REGION}" \
+             --query 'StackResources[?starts_with(ResourceType, `AWS::Organizations::`)].LogicalResourceId' \
+             --output text | grep -q .; then
+          echo "::error::The SCIM synchronization stack contains AWS::Organizations::* resources."
+          exit 1
+        fi
+
+        # 2. Expected core runtime resource counts must match the static template validator
+        #    (scripts/validate-scim-sync-template.ts): six Lambda functions, one Step Functions
+        #    state machine, and one EventBridge rule.
+        RESOURCE_TYPES=$(aws cloudformation describe-stack-resources \
+          --stack-name "${SCIM_STACK_NAME}" --region "${ESC_REGION}" \
+          --query 'StackResources[].ResourceType' --output text | tr '\t' '\n')
+
+        LAMBDA_COUNT=$(printf '%s\n' "${RESOURCE_TYPES}" | grep -c '^AWS::Lambda::Function$' || true)
+        STATE_MACHINE_COUNT=$(printf '%s\n' "${RESOURCE_TYPES}" | grep -c '^AWS::StepFunctions::StateMachine$' || true)
+        RULE_COUNT=$(printf '%s\n' "${RESOURCE_TYPES}" | grep -c '^AWS::Events::Rule$' || true)
+
+        echo "Reported resource counts: Lambda=${LAMBDA_COUNT}, StateMachine=${STATE_MACHINE_COUNT}, EventsRule=${RULE_COUNT}"
+
+        if [ "${LAMBDA_COUNT}" -ne 6 ]; then
+          echo "::error::Expected 6 AWS::Lambda::Function resources but the SCIM synchronization stack reported ${LAMBDA_COUNT}."
+          exit 1
+        fi
+        if [ "${STATE_MACHINE_COUNT}" -ne 1 ]; then
+          echo "::error::Expected 1 AWS::StepFunctions::StateMachine resource but the SCIM synchronization stack reported ${STATE_MACHINE_COUNT}."
+          exit 1
+        fi
+        if [ "${RULE_COUNT}" -ne 1 ]; then
+          echo "::error::Expected 1 AWS::Events::Rule resource but the SCIM synchronization stack reported ${RULE_COUNT}."
+          exit 1
+        fi
+
+        echo "Post-deployment SCIM sync validation passed."

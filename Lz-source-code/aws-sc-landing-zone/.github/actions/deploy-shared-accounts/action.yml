@@ -1,0 +1,234 @@
+name: deploy-shared-accounts
+description: >
+  Resolve the Security OU ID from the deployed OU stack, deploy the shared-accounts stack
+  (`lz-shared-accounts`) which creates the Audit and Log Archive accounts under the existing
+  Security OU, run the post-deployment shared-accounts validation, and expose the resulting
+  `AccountIdAudit` and `AccountIdLogArchive` values as action outputs so the calling workflow
+  can feed them (Path A) to the Control Tower initialization action.
+  Reused by staging-deploy.yml per
+  `.apm/instructions/shared-account-provisioning.instructions.md` §18. Production must NOT
+  invoke this action while shared-account creation there remains deferred (§14); use
+  `resolve-shared-accounts` instead.
+  Requires AWS credentials to be configured before this action runs and the OU stack to have
+  been deployed first. Does not introduce CloudFormation Export/Import coupling or CDK
+  cross-stack references; the Security OU ID flows via `describe-stacks` -> `--parameters`.
+inputs:
+  environment:
+    description: Target environment (`staging` or `production`). Passed to `cdk` via `-c environment=...`.
+    required: true
+  account-id:
+    description: 12-digit AWS account ID the CDK stack deploys into. Sets `CDK_DEFAULT_ACCOUNT`.
+    required: true
+  aws-region:
+    description: AWS region for CloudFormation and Organizations API calls.
+    required: false
+    default: eusc-de-east-1
+  stack-id:
+    description: CDK construct ID of the shared-accounts stack.
+    required: false
+    default: SharedAccountsStack
+  ou-stack-name:
+    description: CloudFormation stack name of the deployed OU Structure stack.
+    required: false
+    default: lz-ou-structure
+  accounts-stack-name:
+    description: CloudFormation stack name of the shared-accounts stack.
+    required: false
+    default: lz-shared-accounts
+  diff-continue-on-error:
+    description: >
+      When `'true'`, a non-zero `cdk diff` exit code does not fail the step. Preserves the
+      pre-refactor Staging behavior where the shared-accounts diff was advisory
+      (`continue-on-error: true`).
+    required: false
+    default: 'false'
+outputs:
+  ou-id-security:
+    description: The Security OU ID resolved from the OU stack (`ou-` prefix).
+    value: ${{ steps.resolve_ou_id_security.outputs.ou-id-security }}
+  audit-account-id:
+    description: >
+      12-digit `AccountIdAudit` value resolved from the deployed shared-accounts stack outputs.
+    value: ${{ steps.validate.outputs.audit-account-id }}
+  log-archive-account-id:
+    description: >
+      12-digit `AccountIdLogArchive` value resolved from the deployed shared-accounts stack
+      outputs.
+    value: ${{ steps.validate.outputs.log-archive-account-id }}
+runs:
+  using: composite
+  steps:
+    - name: Resolve Security OU ID from the deployed OU stack
+      id: resolve_ou_id_security
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        OU_STACK_NAME: ${{ inputs.ou-stack-name }}
+      run: |
+        set -euo pipefail
+
+        OU_ID_SECURITY=$(aws cloudformation describe-stacks \
+          --stack-name "${OU_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='OuIdSecurity'].OutputValue | [0]" \
+          --output text)
+
+        if [ -z "${OU_ID_SECURITY}" ] || [ "${OU_ID_SECURITY}" = "None" ]; then
+          echo "::error::${OU_STACK_NAME} does not expose an OuIdSecurity output. Refusing to deploy the shared-accounts stack without a resolved Security OU."
+          exit 1
+        fi
+        if ! printf '%s' "${OU_ID_SECURITY}" | grep -qE '^ou-[0-9a-z]{4,32}-[0-9a-z]{8,32}$'; then
+          echo "::error::OU stack output 'OuIdSecurity' has value '${OU_ID_SECURITY}', which is not a valid AWS Organizations OU ID."
+          exit 1
+        fi
+
+        echo "ou-id-security=${OU_ID_SECURITY}" >> "$GITHUB_OUTPUT"
+        echo "Resolved Security OU: ${OU_ID_SECURITY}"
+
+    - name: CDK diff (Shared Accounts stack)
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        OU_ID_SECURITY: ${{ steps.resolve_ou_id_security.outputs.ou-id-security }}
+        DIFF_CONTINUE_ON_ERROR: ${{ inputs.diff-continue-on-error }}
+      run: |
+        set +e
+        pnpm exec cdk diff "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively \
+          --parameters "OuIdSecurity=${OU_ID_SECURITY}"
+        rc=$?
+        if [ "${DIFF_CONTINUE_ON_ERROR}" = "true" ] && [ "${rc}" -ne 0 ]; then
+          echo "::warning::cdk diff for ${STACK_ID} exited with ${rc}; continuing because diff-continue-on-error=true (advisory)."
+          exit 0
+        fi
+        exit "${rc}"
+
+    - name: Deploy Shared Accounts stack
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        OU_ID_SECURITY: ${{ steps.resolve_ou_id_security.outputs.ou-id-security }}
+      run: |
+        pnpm exec cdk deploy "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively \
+          --parameters "OuIdSecurity=${OU_ID_SECURITY}" \
+          --require-approval never \
+          --progress events
+
+    - name: Post-deployment shared-accounts validation
+      id: validate
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        OU_ID_SECURITY: ${{ steps.resolve_ou_id_security.outputs.ou-id-security }}
+        ACCOUNTS_STACK_NAME_INPUT: ${{ inputs.accounts-stack-name }}
+      run: |
+        set -euo pipefail
+
+        ACCOUNTS_STACK_NAME=$(jq -r --arg name "${ACCOUNTS_STACK_NAME_INPUT}" '
+          .artifacts | to_entries[]
+          | select(.value.type == "aws:cloudformation:stack")
+          | select(.value.properties.stackName == $name)
+          | .value.properties.stackName
+        ' cdk.out/manifest.json | head -n 1)
+
+        if [ -z "${ACCOUNTS_STACK_NAME}" ] || [ "${ACCOUNTS_STACK_NAME}" = "null" ]; then
+          echo "::error::Unable to determine the shared-accounts stack name from cdk.out/manifest.json."
+          exit 1
+        fi
+        echo "Validating stack: ${ACCOUNTS_STACK_NAME}"
+
+        STATUS=$(aws cloudformation describe-stacks \
+          --stack-name "${ACCOUNTS_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query 'Stacks[0].StackStatus' --output text)
+        echo "Stack status: ${STATUS}"
+
+        case "${STATUS}" in
+          CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+          *) echo "::error::Unexpected stack status '${STATUS}'."; exit 1 ;;
+        esac
+
+        # 1. The stack must contain only AWS::Organizations::Account resources - no OUs, no
+        #    policies, no baseline resources.
+        UNEXPECTED_TYPES=$(aws cloudformation describe-stack-resources \
+          --stack-name "${ACCOUNTS_STACK_NAME}" --region "${ESC_REGION}" \
+          --query 'StackResources[].ResourceType' --output text \
+          | tr '\t' '\n' | grep -vx 'AWS::Organizations::Account' | grep -v '^$' || true)
+        if [ -n "${UNEXPECTED_TYPES}" ]; then
+          echo "::error::The shared-accounts stack contains unexpected resource types:"
+          printf '  - %s\n' ${UNEXPECTED_TYPES}
+          exit 1
+        fi
+
+        # 2. Two accounts must exist under the Security OU, with the approved names.
+        mapfile -t ACCOUNT_IDS < <(aws cloudformation describe-stacks \
+          --stack-name "${ACCOUNTS_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?starts_with(OutputKey, 'AccountId')].OutputValue" \
+          --output text | tr '\t' '\n' | sed '/^$/d')
+
+        echo "Reported shared accounts: ${#ACCOUNT_IDS[@]}"
+        if [ "${#ACCOUNT_IDS[@]}" -ne 2 ]; then
+          echo "::error::Expected 2 shared accounts but the stack reported ${#ACCOUNT_IDS[@]}."
+          exit 1
+        fi
+        for id in "${ACCOUNT_IDS[@]}"; do
+          if ! printf '%s' "$id" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::'$id' is not a valid AWS account ID."
+            exit 1
+          fi
+        done
+
+        LOG_ARCHIVE_ID=$(aws cloudformation describe-stacks \
+          --stack-name "${ACCOUNTS_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='AccountIdLogArchive'].OutputValue | [0]" \
+          --output text)
+        AUDIT_ID=$(aws cloudformation describe-stacks \
+          --stack-name "${ACCOUNTS_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='AccountIdAudit'].OutputValue | [0]" \
+          --output text)
+
+        if [ "${AUDIT_ID}" = "${LOG_ARCHIVE_ID}" ]; then
+          echo "::error::Audit and Log Archive account IDs must differ."
+          exit 1
+        fi
+
+        echo "log-archive-account-id=${LOG_ARCHIVE_ID}" >> "$GITHUB_OUTPUT"
+        echo "audit-account-id=${AUDIT_ID}" >> "$GITHUB_OUTPUT"
+
+        # 3. Both accounts must appear under the Security OU. If either name is missing, refuse.
+        SECURITY_CHILDREN=$(aws organizations list-accounts-for-parent \
+          --parent-id "${OU_ID_SECURITY}" \
+          --region "${ESC_REGION}" \
+          --query 'Accounts[].Name' --output text | tr '\t' '\n')
+        echo "Accounts directly under Security OU:"
+        echo "${SECURITY_CHILDREN}" | sed 's/^/  - /'
+
+        for expected in 'Log Archive' 'Audit'; do
+          if ! printf '%s\n' "${SECURITY_CHILDREN}" | grep -qFx "${expected}"; then
+            echo "::error::Approved shared account '${expected}' was not found under the Security OU."
+            exit 1
+          fi
+        done
+
+        # 4. Each name must appear exactly once under Security to catch duplicate CreateAccount.
+        for expected in 'Log Archive' 'Audit'; do
+          occurrences=$(printf '%s\n' "${SECURITY_CHILDREN}" | grep -cFx "${expected}" || true)
+          if [ "${occurrences}" -ne 1 ]; then
+            echo "::error::Shared account '${expected}' appears ${occurrences} times under the Security OU (expected 1)."
+            exit 1
+          fi
+        done
+
+        echo "Post-deployment shared-accounts validation passed."

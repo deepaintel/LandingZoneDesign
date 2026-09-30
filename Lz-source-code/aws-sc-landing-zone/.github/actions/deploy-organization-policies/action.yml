@@ -1,0 +1,232 @@
+name: deploy-organization-policies
+description: >
+  Resolve the OU stack's `OuId*` outputs at runtime, deploy the Organization Policy stack
+  (`lz-organization-policies`) with those OU IDs plus the Organization Root ID and Organization
+  ID as CloudFormation parameters, and run the post-deployment policy validation
+  (stack status, `SERVICE_CONTROL_POLICY` and `RESOURCE_CONTROL_POLICY` both `ENABLED` on the
+  Root, only `AWS::Organizations::Policy` resources present, no `AWS::Organizations::Account`
+  resources, no 12-digit account ID in stack output descriptions).
+  Reused by staging-deploy.yml and production-deploy.yml per
+  `.apm/instructions/landing-zone-scp-governance.instructions.md` ("Organization Policy Deployment
+  Composite Action") and `.apm/instructions/landing-zone-ou-governance.instructions.md` §22.
+  Requires AWS credentials to be configured before this action runs and the OU stack to have been
+  deployed first. Does not introduce CloudFormation Export/Import coupling or CDK cross-stack
+  references; OU IDs flow via `describe-stacks` -> `--parameters`, per
+  `.apm/instructions/landing-zone-cloudformation-governance.instructions.md`.
+inputs:
+  environment:
+    description: Target environment (`staging` or `production`). Passed to `cdk` via `-c environment=...`.
+    required: true
+  account-id:
+    description: 12-digit AWS account ID the CDK stacks deploy into. Sets `CDK_DEFAULT_ACCOUNT`.
+    required: true
+  organization-root-id:
+    description: Organizations Root ID from the `prepare-organization` composite action.
+    required: true
+  organization-id:
+    description: Organization ID from the `prepare-organization` composite action.
+    required: true
+  aws-region:
+    description: AWS region for CloudFormation and Organizations API calls.
+    required: false
+    default: eusc-de-east-1
+  stack-id:
+    description: CDK construct ID of the Organization Policy stack.
+    required: false
+    default: OrganizationPolicyStack
+  ou-stack-name:
+    description: CloudFormation stack name of the deployed OU Structure stack.
+    required: false
+    default: lz-ou-structure
+  policy-stack-name:
+    description: CloudFormation stack name of the Organization Policy stack.
+    required: false
+    default: lz-organization-policies
+  diff-continue-on-error:
+    description: >
+      When `'true'`, a non-zero `cdk diff` exit code does not fail the step. Preserves the
+      pre-refactor behavior where Staging's diff was advisory (`continue-on-error: true`) and
+      Production's diff was strict.
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Resolve OU IDs from the deployed OU stack
+      id: resolve_ou_ids
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        OU_STACK_NAME: ${{ inputs.ou-stack-name }}
+      run: |
+        set -euo pipefail
+
+        OU_PARAMS_FILE="$RUNNER_TEMP/ou-params"
+        : > "$OU_PARAMS_FILE"
+
+        count=0
+        while IFS=$'\t' read -r OUTPUT_KEY OUTPUT_VALUE; do
+          if [ -z "${OUTPUT_KEY}" ] || [ -z "${OUTPUT_VALUE}" ]; then
+            continue
+          fi
+          # Refuse a value that is not a real AWS Organizations OU ID; without this a malformed
+          # output would silently reach cdk deploy and fail the pattern check on the parameter.
+          if ! printf '%s' "${OUTPUT_VALUE}" | grep -qE '^ou-[0-9a-z]{4,32}-[0-9a-z]{8,32}$'; then
+            echo "::error::OU stack output '${OUTPUT_KEY}' has value '${OUTPUT_VALUE}', which is not a valid AWS Organizations OU ID."
+            exit 1
+          fi
+          printf -- '--parameters\n%s=%s\n' "${OUTPUT_KEY}" "${OUTPUT_VALUE}" >> "$OU_PARAMS_FILE"
+          count=$((count + 1))
+        done < <(aws cloudformation describe-stacks \
+          --stack-name "${OU_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query 'Stacks[0].Outputs[?starts_with(OutputKey, `OuId`)].[OutputKey,OutputValue]' \
+          --output text)
+
+        if [ "${count}" -ne 14 ]; then
+          echo "::error::Expected 14 OuId* outputs on ${OU_STACK_NAME} but resolved ${count}. Refusing to deploy the policy stack against a partially-formed OU hierarchy."
+          exit 1
+        fi
+
+        echo "ou-params-file=${OU_PARAMS_FILE}" >> "$GITHUB_OUTPUT"
+        echo "Resolved ${count} OuId* parameters from ${OU_STACK_NAME}:"
+        cat "$OU_PARAMS_FILE"
+
+    - name: CDK diff (Organization Policy stack)
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        ORGANIZATION_ROOT_ID: ${{ inputs.organization-root-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        OU_PARAMS_FILE: ${{ steps.resolve_ou_ids.outputs.ou-params-file }}
+        DIFF_CONTINUE_ON_ERROR: ${{ inputs.diff-continue-on-error }}
+      run: |
+        set +e
+        mapfile -t OU_PARAMS < "$OU_PARAMS_FILE"
+        pnpm exec cdk diff "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively \
+          --parameters "OrganizationRootId=${ORGANIZATION_ROOT_ID}" \
+          --parameters "OrganizationId=${ORGANIZATION_ID}" \
+          "${OU_PARAMS[@]}"
+        rc=$?
+        if [ "${DIFF_CONTINUE_ON_ERROR}" = "true" ] && [ "${rc}" -ne 0 ]; then
+          echo "::warning::cdk diff for ${STACK_ID} exited with ${rc}; continuing because diff-continue-on-error=true (advisory)."
+          exit 0
+        fi
+        exit "${rc}"
+
+    - name: Deploy Organization Policy stack
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        ORGANIZATION_ROOT_ID: ${{ inputs.organization-root-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        OU_PARAMS_FILE: ${{ steps.resolve_ou_ids.outputs.ou-params-file }}
+      run: |
+        set -euo pipefail
+        mapfile -t OU_PARAMS < "$OU_PARAMS_FILE"
+        pnpm exec cdk deploy "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively \
+          --parameters "OrganizationRootId=${ORGANIZATION_ROOT_ID}" \
+          --parameters "OrganizationId=${ORGANIZATION_ID}" \
+          "${OU_PARAMS[@]}" \
+          --require-approval never \
+          --progress events
+
+    - name: Post-deployment policy validation
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        ORGANIZATION_ROOT_ID: ${{ inputs.organization-root-id }}
+        POLICY_STACK_NAME_INPUT: ${{ inputs.policy-stack-name }}
+      run: |
+        set -euo pipefail
+
+        POLICY_STACK_NAME=$(jq -r --arg name "${POLICY_STACK_NAME_INPUT}" '
+          .artifacts | to_entries[]
+          | select(.value.type == "aws:cloudformation:stack")
+          | select(.value.properties.stackName == $name)
+          | .value.properties.stackName
+        ' cdk.out/manifest.json | head -n 1)
+
+        if [ -z "${POLICY_STACK_NAME}" ] || [ "${POLICY_STACK_NAME}" = "null" ]; then
+          echo "::error::Unable to determine the organization policy stack name from cdk.out/manifest.json."
+          exit 1
+        fi
+        echo "Validating policy stack: ${POLICY_STACK_NAME}"
+
+        POLICY_STATUS=$(aws cloudformation describe-stacks \
+          --stack-name "${POLICY_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query 'Stacks[0].StackStatus' --output text)
+        echo "Policy stack status: ${POLICY_STATUS}"
+
+        case "${POLICY_STATUS}" in
+          CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+          *) echo "::error::Unexpected policy stack status '${POLICY_STATUS}'."; exit 1 ;;
+        esac
+
+        # SERVICE_CONTROL_POLICY and RESOURCE_CONTROL_POLICY must both be ENABLED on the Root
+        # for SCP and RCP creation to have succeeded. Neither type is auto-enabled by
+        # create-organization --feature-set ALL; prepare-organization enables them explicitly.
+        # JMESPath: unwrap the filtered Roots projection with `| [0]` before descending into
+        # PolicyTypes. Without the unwrap, --output text returns 'None' even when the policy
+        # type is ENABLED (same fix as prepare-organization/action.yaml).
+        SCP_STATUS=$(aws organizations list-roots \
+          --region "${ESC_REGION}" \
+          --query "Roots[?Id=='${ORGANIZATION_ROOT_ID}'] | [0].PolicyTypes[?Type=='SERVICE_CONTROL_POLICY'].Status | [0]" \
+          --output text)
+        echo "SERVICE_CONTROL_POLICY status on Root: ${SCP_STATUS}"
+        if [ "${SCP_STATUS}" != "ENABLED" ]; then
+          echo "::error::SERVICE_CONTROL_POLICY is not ENABLED on Root ${ORGANIZATION_ROOT_ID} (status '${SCP_STATUS}')."
+          exit 1
+        fi
+
+        RCP_STATUS=$(aws organizations list-roots \
+          --region "${ESC_REGION}" \
+          --query "Roots[?Id=='${ORGANIZATION_ROOT_ID}'] | [0].PolicyTypes[?Type=='RESOURCE_CONTROL_POLICY'].Status | [0]" \
+          --output text)
+        echo "RESOURCE_CONTROL_POLICY status on Root: ${RCP_STATUS}"
+        if [ "${RCP_STATUS}" != "ENABLED" ]; then
+          echo "::error::RESOURCE_CONTROL_POLICY is not ENABLED on Root ${ORGANIZATION_ROOT_ID} (status '${RCP_STATUS}')."
+          exit 1
+        fi
+
+        # The policy stack must contain only AWS::Organizations::Policy resources - no accounts.
+        UNEXPECTED_TYPES=$(aws cloudformation describe-stack-resources \
+          --stack-name "${POLICY_STACK_NAME}" --region "${ESC_REGION}" \
+          --query 'StackResources[].ResourceType' --output text \
+          | tr '\t' '\n' | grep -vx 'AWS::Organizations::Policy' | grep -v '^$' || true)
+        if [ -n "${UNEXPECTED_TYPES}" ]; then
+          echo "::error::The organization policy stack contains unexpected resource types:"
+          printf '  - %s\n' ${UNEXPECTED_TYPES}
+          exit 1
+        fi
+
+        if aws cloudformation describe-stack-resources \
+             --stack-name "${POLICY_STACK_NAME}" --region "${ESC_REGION}" \
+             --query 'StackResources[?ResourceType==`AWS::Organizations::Account`].LogicalResourceId' \
+             --output text | grep -q .; then
+          echo "::error::The organization policy stack contains AWS::Organizations::Account resources."
+          exit 1
+        fi
+
+        # Every policy attachment target must be a Root/OU ID, never a 12-digit account ID.
+        if aws cloudformation describe-stacks \
+             --stack-name "${POLICY_STACK_NAME}" --region "${ESC_REGION}" \
+             --query 'Stacks[0].Outputs' --output json \
+           | jq -r '.[].Description // ""' \
+           | grep -qE '\b[0-9]{12}\b'; then
+          echo "::error::Organization policy stack outputs mention a 12-digit account ID. Account-level attachment is deferred."
+          exit 1
+        fi
+
+        echo "Post-deployment policy validation passed."

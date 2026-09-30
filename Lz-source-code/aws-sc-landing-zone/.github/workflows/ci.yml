@@ -1,0 +1,441 @@
+# =============================================================================================
+# CI - integration validation only. NEVER deploys, NEVER bootstraps, NEVER requests AWS
+# deployment credentials (no `id-token: write` anywhere in this workflow).
+#
+# Branch model (no long-lived `develop`):
+#   feature/* -> main -> release/* -> Staging -> approvals -> manual Production
+#   feature/fix-* | hotfix/* -> main -> backport/* -> PR -> release/*
+#
+# `main` runs CI only. `release/*` is the only AWS deployment source (staging-deploy.yml).
+# `backport/*` is validated here through its PR to `release/*` but never deploys.
+# =============================================================================================
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'hotfix/**'
+      - 'backport/**'
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+
+# No id-token. CI must not be able to obtain AWS deployment credentials.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Build, test and validate Landing Zone and policy templates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup Node
+        uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+        with:
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Enable PNPM
+        uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Microsoft APM
+        uses: ccoe-aws/reusable-workflows/.github/actions/microsoft-apm@main
+        with:
+          apm-version: '0.28.0'
+
+      - name: Validate APM project
+        run: |
+          set -euo pipefail
+          apm audit --ci
+
+      - name: Validate configuration loading
+        run: |
+          set -euo pipefail
+
+          for env in staging production; do
+            ACCOUNT_ID=$(pnpm exec ccoe-config-reader "${env}" --configDirName config | jq -r '.aws.accountId')
+
+            if ! printf '%s' "${ACCOUNT_ID}" | grep -qE '^[0-9]{12}$'; then
+              echo "::error::aws.accountId missing or malformed after merging config/default.yaml with config/${env}.yaml (got '${ACCOUNT_ID}')."
+              exit 1
+            fi
+
+            echo "Configuration validation passed for ${env}. Resolved accountId: ${ACCOUNT_ID}"
+          done
+
+      - name: Build (strict TypeScript)
+        run: pnpm run build
+
+      - name: Typecheck tests
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Unit and CDK assertion tests
+        run: pnpm test
+
+      - name: CDK synth (staging)
+        run: pnpm run synth:staging
+
+      - name: Validate synthesized OU template
+        run: pnpm run validate:ou-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized Identity Center template
+        run: pnpm run validate:identity-center-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized SCIM synchronization template
+        run: pnpm run validate:scim-sync-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized policy template
+        run: pnpm run validate:policy-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized shared-accounts template
+        run: pnpm run validate:accounts-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate Control Tower Landing Zone 4.0 manifest (staging)
+        run: pnpm run validate:control-tower-manifest -- --environment staging
+
+      - name: CDK synth (production)
+        run: pnpm run synth:production
+
+      - name: Validate synthesized OU template (production)
+        run: pnpm run validate:ou-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized Identity Center template (production)
+        run: pnpm run validate:identity-center-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized SCIM synchronization template (production)
+        run: pnpm run validate:scim-sync-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized policy template (production)
+        run: pnpm run validate:policy-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized shared-accounts template (production)
+        run: pnpm run validate:accounts-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate Control Tower Landing Zone 4.0 manifest (production)
+        run: pnpm run validate:control-tower-manifest -- --environment production
+
+      # -------------------------------------------------------------------------------------
+      # ESC partition / Region correctness in SOURCE. The synthesized templates themselves are
+      # already checked by validate:ou-template.
+      #
+      # `.github/` is excluded so the guard cannot match its own patterns, and `tests/` is
+      # excluded because negative-test fixtures deliberately contain commercial values in order
+      # to prove the validator rejects them.
+      # -------------------------------------------------------------------------------------
+      - name: ESC partition and Region source checks
+        run: |
+          set -euo pipefail
+          SCAN_PATHS="bin lib config scripts package.json cdk.json tsconfig.json"
+
+          fail=0
+
+          if grep -rInE 'arn:aws[:]' $SCAN_PATHS; then
+            echo "::error::Commercial ARN prefix found. All ARNs must use arn:aws-eusc:."
+            fail=1
+          fi
+
+          if grep -rInE 'sts\.amazonaws\.com' $SCAN_PATHS; then
+            echo "::error::Commercial STS endpoint found. ESC uses sts.eusc-de-east-1.amazonaws.eu."
+            fail=1
+          fi
+
+          if grep -rInE '\b(us|eu|ap|sa|ca|me|af|il|cn)-(gov-)?[a-z]+-[0-9]\b' $SCAN_PATHS; then
+            echo "::error::Non-ESC AWS Region reference found. Only eusc-de-east-1 is permitted."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "ESC partition and Region source checks passed."
+
+      - name: Retired develop-model artifact check
+        run: |
+          set -euo pipefail
+          fail=0
+
+          for path in config/develop.yaml config/environments/develop.yaml \
+                      .github/workflows/deploy-develop.yml .github/workflows/develop-deploy.yml; do
+            if [ -e "$path" ]; then
+              echo "::error::'$path' belongs to the retired long-lived develop branch model."
+              fail=1
+            fi
+          done
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "No retired develop-model artifacts found."
+
+      # -------------------------------------------------------------------------------------
+      # Governance assertions on the workflow definitions themselves, parsed as YAML rather
+      # than grepped, so the checks cannot drift with formatting.
+      # -------------------------------------------------------------------------------------
+      - name: Deployment-authority checks
+        run: |
+          node --input-type=module -e "
+          import { readFileSync } from 'node:fs';
+          import { parse } from 'yaml';
+
+          const failures = [];
+          const load = (file) => {
+            const doc = parse(readFileSync(file, 'utf8'));
+            // YAML 1.1 parsers coerce the on key to boolean true; tolerate both forms.
+            return { doc, triggers: doc.on ?? doc[true] ?? {} };
+          };
+
+          const ci = load('.github/workflows/ci.yml');
+          for (const [name, job] of Object.entries(ci.doc.jobs ?? {})) {
+            if (job?.permissions && 'id-token' in job.permissions) {
+              failures.push('ci.yml job ' + name + ' must not request id-token permissions.');
+            }
+          }
+          if (ci.doc.permissions && 'id-token' in ci.doc.permissions) {
+            failures.push('ci.yml must not request id-token permissions at workflow level.');
+          }
+
+          const staging = load('.github/workflows/staging-deploy.yml');
+          const stagingTriggers = Object.keys(staging.triggers);
+          if (stagingTriggers.length !== 1 || stagingTriggers[0] !== 'push') {
+            failures.push('staging-deploy.yml must trigger only on push, found: ' + stagingTriggers.join(', '));
+          }
+          const stagingBranches = staging.triggers.push?.branches ?? [];
+          const disallowed = stagingBranches.filter((b) => !String(b).startsWith('release/'));
+          if (disallowed.length > 0) {
+            failures.push('staging-deploy.yml must deploy only from release/*, found: ' + disallowed.join(', '));
+          }
+          if (stagingBranches.length === 0) {
+            failures.push('staging-deploy.yml declares no release/* branch filter.');
+          }
+
+          const production = load('.github/workflows/production-deploy.yml');
+          const productionTriggers = Object.keys(production.triggers);
+          if (productionTriggers.length !== 1 || productionTriggers[0] !== 'workflow_dispatch') {
+            failures.push(
+              'production-deploy.yml must trigger only on workflow_dispatch, found: ' + productionTriggers.join(', ')
+            );
+          }
+
+          const productionAuthorize = production.doc.jobs?.authorize;
+          const productionDeploy = production.doc.jobs?.['deploy-production'];
+          if (productionAuthorize?.environment !== 'production') {
+            failures.push('production-deploy.yml authorize job must use the protected production environment.');
+          }
+          if (productionDeploy?.environment !== 'production') {
+            failures.push('production-deploy.yml deploy-production job must use the protected production environment.');
+          }
+          if (production.triggers.workflow_dispatch?.inputs?.release_commit_sha?.required !== true) {
+            failures.push('production-deploy.yml must require release_commit_sha.');
+          }
+          // Production authorization gates must stay in the workflow. The authorize job must be
+          // present, precede validate/deploy-production via needs, and check
+          // PRODUCTION_DEPLOYMENT_ENABLED. Composite actions may not evaluate this gate.
+          if (!productionAuthorize) {
+            failures.push('production-deploy.yml must declare an authorize job for the Production gate.');
+          }
+          const productionValidate = production.doc.jobs?.validate;
+          const productionNeeds = (jobs) => (typeof jobs === 'string' ? [jobs] : Array.isArray(jobs) ? jobs : []);
+          if (!productionNeeds(productionValidate?.needs).includes('authorize')) {
+            failures.push('production-deploy.yml validate job must depend on the authorize job.');
+          }
+          if (!productionNeeds(productionDeploy?.needs).includes('validate')) {
+            failures.push('production-deploy.yml deploy-production job must depend on the validate job.');
+          }
+          const productionText = readFileSync('.github/workflows/production-deploy.yml', 'utf8');
+          if (!productionText.includes('PRODUCTION_DEPLOYMENT_ENABLED')) {
+            failures.push('production-deploy.yml must gate execution on PRODUCTION_DEPLOYMENT_ENABLED.');
+          }
+
+          // Configuration must be loaded through ccoe-config-reader with --configDirName config.
+          // After the workflow refactor, this happens inside ./.github/actions/setup-workspace
+          // for staging-deploy.yml and production-deploy.yml; ci.yml still calls the CLI
+          // directly. Check the workflow contents, or the composite action referenced by the
+          // workflow, so the assertion follows the extraction.
+          const setupWorkspaceAction = '.github/actions/setup-workspace/action.yml';
+          const setupWorkspaceRef = './.github/actions/setup-workspace';
+          for (const [file, workflow] of [
+            ['.github/workflows/ci.yml', ci.doc],
+            ['.github/workflows/staging-deploy.yml', staging.doc],
+            ['.github/workflows/production-deploy.yml', production.doc]
+          ]) {
+            const contents = readFileSync(file, 'utf8');
+            const usesSetupWorkspace = contents.includes(setupWorkspaceRef);
+            const setupWorkspaceContents = usesSetupWorkspace ? readFileSync(setupWorkspaceAction, 'utf8') : '';
+            const configLoaderPresent =
+              (contents.includes('ccoe-config-reader') && contents.includes('--configDirName config')) ||
+              (usesSetupWorkspace &&
+                setupWorkspaceContents.includes('ccoe-config-reader') &&
+                setupWorkspaceContents.includes('--configDirName config'));
+            if (!configLoaderPresent) {
+              failures.push(file + ' must load environment configuration through ccoe-config-reader with --configDirName config (directly or via the setup-workspace composite action).');
+            }
+            for (const [name, job] of Object.entries(workflow.jobs ?? {})) {
+              const requestsOidc = job?.permissions?.['id-token'] === 'write';
+              if (requestsOidc && !['deploy-staging', 'deploy-production'].includes(name)) {
+                failures.push(file + ' job ' + name + ' must not request id-token permissions.');
+              }
+            }
+          }
+
+          const runtimeValidator = ['validate', 'identity-center-runtime'].join(':');
+          if (readFileSync('.github/workflows/ci.yml', 'utf8').includes(runtimeValidator)) {
+            failures.push('ci.yml must not run the AWS-backed Identity Center runtime validator.');
+          }
+
+          // Deployment action ordering in Staging and Production. The workflows compose the
+          // deploy job from local composite actions; ordering is enforced here by asserting the
+          // relative positions of the actual invocation \`uses: ./.github/actions/<name>\` lines
+          // rather than plain substring matches, so documentation references in comments do
+          // not skew the check. The prepare-organization step name (\"Prepare AWS Organization\")
+          // is stable and anchors the front of the sequence.
+          const prepareOrgAnchor = 'Prepare AWS Organization';
+          const usesRef = (name) => new RegExp('uses:\\\\s*\\\\./\\\\.github/actions/' + name + '(?![A-Za-z0-9_-])');
+
+          const requireOrderedInvocations = (file, contents, ordered) => {
+            let previousLabel = null;
+            let previousIndex = -1;
+            for (const [label, needle] of ordered) {
+              const match = needle instanceof RegExp ? needle.exec(contents) : null;
+              const idx = match ? match.index : (typeof needle === 'string' ? contents.indexOf(needle) : -1);
+              if (idx === -1) {
+                failures.push(file + ' must invoke ' + label + '.');
+                continue;
+              }
+              if (previousLabel !== null && idx < previousIndex) {
+                failures.push(file + ' must invoke ' + label + ' after ' + previousLabel + '.');
+              }
+              previousLabel = label;
+              previousIndex = idx;
+            }
+          };
+
+          const stagingText = readFileSync('.github/workflows/staging-deploy.yml', 'utf8');
+          requireOrderedInvocations('staging-deploy.yml', stagingText, [
+            ['Prepare AWS Organization', prepareOrgAnchor],
+            ['deploy-ou-structure', usesRef('deploy-ou-structure')],
+            ['deploy-identity-center', usesRef('deploy-identity-center')],
+            ['deploy-scim-sync', usesRef('deploy-scim-sync')],
+            ['deploy-organization-policies', usesRef('deploy-organization-policies')],
+            ['deploy-shared-accounts', usesRef('deploy-shared-accounts')],
+            ['initialize-control-tower', usesRef('initialize-control-tower')]
+          ]);
+          if (usesRef('resolve-shared-accounts').test(stagingText)) {
+            failures.push('staging-deploy.yml must not invoke the read-only resolve-shared-accounts action; Staging deploys the shared accounts via deploy-shared-accounts.');
+          }
+
+          requireOrderedInvocations('production-deploy.yml', productionText, [
+            ['Prepare AWS Organization', prepareOrgAnchor],
+            ['deploy-ou-structure', usesRef('deploy-ou-structure')],
+            ['deploy-identity-center', usesRef('deploy-identity-center')],
+            ['deploy-scim-sync', usesRef('deploy-scim-sync')],
+            ['deploy-organization-policies', usesRef('deploy-organization-policies')],
+            ['resolve-shared-accounts', usesRef('resolve-shared-accounts')],
+            ['initialize-control-tower', usesRef('initialize-control-tower')]
+          ]);
+          if (usesRef('deploy-shared-accounts').test(productionText)) {
+            failures.push('production-deploy.yml must not invoke deploy-shared-accounts; Production shared-account creation is deferred per shared-account-provisioning.instructions.md §14.');
+          }
+
+          // Built dynamically so this guard can never match its own source text.
+          const legacyWorkflow = ['deploy', 'cdk'].join('-');
+          for (const file of [
+            '.github/workflows/staging-deploy.yml',
+            '.github/workflows/production-deploy.yml'
+          ]) {
+            if (readFileSync(file, 'utf8').includes(legacyWorkflow)) {
+              failures.push(file + ' must not consume the legacy ' + legacyWorkflow + ' reusable workflow.');
+            }
+          }
+
+          if (failures.length > 0) {
+            for (const failure of failures) console.error('::error::' + failure);
+            process.exit(1);
+          }
+          console.log('Deployment-authority checks passed.');
+          "
+
+      # -------------------------------------------------------------------------------------
+      # Secrets / credential scan.
+      # TODO: replace with the centrally approved secret-scanning composite action once its
+      # interface is confirmed in ccoe-aws/reusable-workflows. The inline scan below is a
+      # self-contained baseline and is intentionally conservative.
+      # -------------------------------------------------------------------------------------
+      - name: Secrets and hardcoded-identifier scan
+        run: |
+          set -euo pipefail
+          SCAN_PATHS="bin lib config scripts tests package.json cdk.json README.md"
+          fail=0
+
+          scan() {
+            local label="$1"
+            local pattern="$2"
+            if grep -rInE "$pattern" $SCAN_PATHS; then
+              echo "::error::$label detected in source."
+              fail=1
+            fi
+          }
+
+          scan "AWS access key ID" '(AKIA|ASIA)[0-9A-Z]{16}'
+          scan "AWS secret access key assignment" 'aws_secret_access_key[[:space:]]*[:=]'
+          scan "Private key block" 'BEGIN [A-Z ]*PRIVATE KEY'
+          scan "GitHub token" '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})'
+
+          # AWS account IDs are AWS identifiers (not secrets) and are declared in config/*.yaml
+          # under aws.accountId - excluded from this scan. Tests inline the same identifier as
+          # fixtures. Any 12-digit sequence found in code paths (bin/, lib/, scripts/) is still
+          # a defect.
+          ACCOUNT_ID_SCAN_PATHS="bin lib scripts package.json cdk.json README.md"
+          if grep -rInE '(^|[^0-9A-Za-z_.-])[0-9]{12}([^0-9A-Za-z_.-]|$)' $ACCOUNT_ID_SCAN_PATHS; then
+            echo "::error::Hardcoded 12-digit AWS account ID detected in code. Account IDs must come from config/*.yaml via ccoe-config-reader."
+            fail=1
+          fi
+
+          # A real Organizations Root ID must never be committed. Documentation placeholders
+          # (r-a1b2 / r-abcd) are the only permitted occurrences.
+          if grep -rInE '(^|[^0-9A-Za-z])r-[0-9a-z]{4,32}([^0-9a-z]|$)' $SCAN_PATHS \
+               | grep -vE 'r-(a1b2|abcd1234|abcd)([^0-9a-z]|$)'; then
+            echo "::error::Possible hardcoded AWS Organizations Root ID detected in source."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Secrets and hardcoded-identifier scan passed."
+
+      - name: Summary
+        run: |
+          {
+            echo "### AWS ESC Landing Zone CI"
+            echo ""
+            echo "- Phase: AWS Organizations OU hierarchy, SCP/RCP policy code, IAM Identity Center Permission Set baseline, and shared Audit/Log Archive accounts (Staging deploy wired, Production deploy of accounts NOT wired in this iteration)"
+            echo "- Partition / Region: aws-eusc / eusc-de-east-1"
+            echo "- Expected OUs: 14 (5 L1 + 3 L2 + 6 L3)"
+            echo "- Expected AWS::Organizations::Policy resources in lz-ou-structure: 0"
+            echo "- Expected AWS::Organizations::Policy resources in lz-organization-policies: 21 (19 SCPs + 2 RCPs)"
+            echo "- Expected AWS::Organizations::Account resources in lz-ou-structure: 0"
+            echo "- Expected AWS::Organizations::Account resources in lz-organization-policies: 0"
+            echo "- Expected AWS::Organizations::Account resources in lz-shared-accounts: 2 (Audit, Log Archive; DeletionPolicy: Retain)"
+            echo "- Expected IAM Identity Center Permission Sets: 10"
+            echo "- Expected IAM Identity Center account assignments: 0"
+            echo "- Expected account-level policy attachments: 0 (deferred)"
+            echo "- Deployment performed: none (CI never deploys or bootstraps)"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,402 @@
+# =============================================================================================
+# Production deployment - REPOSITORY READINESS ONLY.
+#
+# Production MUST NOT be executed during the OU implementation phase. In addition to the
+# protected `production` GitHub Environment approval, this workflow is hard-gated behind the
+# `PRODUCTION_DEPLOYMENT_ENABLED` environment variable, which is expected to be unset (or not
+# `true`) until Production execution is explicitly authorised.
+#
+# Trigger: manual `workflow_dispatch` only. There is deliberately no automatic trigger from
+# `main` and no automatic trigger from `release/*`.
+#
+# Deployment source: run this workflow FROM the approved protected release/* branch that was
+# validated in Staging. GitHub checks out the ref the run was dispatched against, so the branch
+# selected when dispatching IS the deployment baseline. The `release_ref` input must match it,
+# and `release_commit_sha` may pin the exact validated commit.
+#
+# NOTE: the approved `checkout` composite action is invoked without inputs, matching its verified
+# usage in aws-sc-foundation. Its `ref` input (if any) is unconfirmed, so this workflow relies on
+# the dispatch ref rather than guessing an interface. Revisit once the composite action
+# definition in ccoe-aws/reusable-workflows has been inspected.
+#
+# Required GitHub Environment (`production`) variables:
+#   PRODUCTION_DEPLOYMENT_ENABLED    - policy toggle; must be exactly `true` to permit execution
+#
+# Not read from GitHub Environment variables:
+#   - AWS management account ID       -> comes from config/production.yaml via ccoe-config-reader
+#     inside ./.github/actions/setup-workspace.
+#   - Organizations Root ID           -> resolved at deploy time by the prepare-organization action.
+#   - IAM Identity Center identifiers -> resolved at deploy time through the authenticated AWS API.
+#   - Audit / Log Archive account IDs -> Path A, resolved at deploy time from the
+#     `lz-shared-accounts` stack outputs by ./.github/actions/resolve-shared-accounts. Never
+#     persisted to source configuration.
+# =============================================================================================
+name: production-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_ref:
+        description: 'Approved protected release/* branch this run must execute from (must match the branch selected above).'
+        required: true
+        type: string
+      release_commit_sha:
+        description: 'Full 40-character commit SHA of the Staging-validated release baseline.'
+        required: true
+        type: string
+      staging_validation_evidence:
+        description: 'Link or reference to the Staging validation evidence and release approval.'
+        required: true
+        type: string
+      change_reference:
+        description: 'ITSM/CAB change reference, or NOT-REQUIRED when not mandated by the change classification.'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+env:
+  # Consumed by the approved ccoe-aws/reusable-workflows composite actions.
+  ESC_PARTITION: eusc
+  ESC_REGION: eusc-de-east-1
+  # Name of the foundation-managed custom deployment role. aws-sc-foundation's
+  # identity-provider stack currently deploys this role as `github-actions-role`. The
+  # reusable-workflows `aws-credentials` composite action defaults to `github-action-deploy-role`,
+  # so we override explicitly rather than rely on the default.
+  DEPLOYMENT_ROLE_NAME: github-actions-role
+  OU_STRUCTURE_STACK_ID: OuStructureStack
+  IDENTITY_CENTER_PERMISSION_SETS_STACK_ID: IdentityCenterPermissionSetsStack
+  SCIM_SYNC_STACK_ID: ScimSyncStack
+  SCIM_CLEANUP_STACK_ID: ScimCleanupStack
+  ORGANIZATION_POLICY_STACK_ID: OrganizationPolicyStack
+  # Shared Control Tower onboarding accounts (Audit / Log Archive). Present here for
+  # readiness/synth/validate only in this iteration; the deploy job below deliberately does NOT
+  # invoke `cdk deploy` against this stack per
+  # `.apm/instructions/shared-account-provisioning.instructions.md` §14. Production shared-account
+  # creation is deferred to a separately approved activation change.
+  SHARED_ACCOUNTS_STACK_ID: SharedAccountsStack
+  # Control Tower management-account prerequisite roles. Same readiness/synth-only posture as
+  # SHARED_ACCOUNTS_STACK_ID for Production — the deploy job does NOT invoke `cdk deploy` for
+  # this stack until Production Control Tower initialization is separately approved. See
+  # `.apm/instructions/control-tower-initialization.instructions.md` §11.1.
+  CONTROL_TOWER_ROLES_STACK_ID: ControlTowerRolesStack
+
+jobs:
+  # -------------------------------------------------------------------------------------------
+  # Governance gate. Runs before the protected environment is touched.
+  # -------------------------------------------------------------------------------------------
+  authorize:
+    name: Verify Production deployment authority
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - name: Confirm Production execution is authorised for this phase
+        env:
+          PRODUCTION_DEPLOYMENT_ENABLED: ${{ vars.PRODUCTION_DEPLOYMENT_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [ "${PRODUCTION_DEPLOYMENT_ENABLED:-}" != "true" ]; then
+            echo "::error::Production deployment is not authorised. This workflow exists for repository"
+            echo "::error::readiness only during the AWS Organizations OU implementation phase. Set the"
+            echo "::error::PRODUCTION_DEPLOYMENT_ENABLED repository/environment variable to 'true' only"
+            echo "::error::after Production execution has been explicitly approved."
+            exit 1
+          fi
+          echo "Production execution is authorised."
+
+      - name: Confirm the dispatch ref is a protected release branch
+        env:
+          RELEASE_REF: ${{ inputs.release_ref }}
+          RELEASE_COMMIT_SHA: ${{ inputs.release_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          case "${GITHUB_REF}" in
+            refs/heads/release/*)
+              ;;
+            *)
+              echo "::error::Production may only be deployed from a protected release/* branch."
+              echo "::error::This run was dispatched against '${GITHUB_REF}'. Re-dispatch selecting the release branch."
+              exit 1
+              ;;
+          esac
+
+          if [ "${RELEASE_REF}" != "${GITHUB_REF_NAME}" ] && [ "${RELEASE_REF}" != "${GITHUB_REF}" ]; then
+            echo "::error::release_ref '${RELEASE_REF}' does not match the dispatched ref '${GITHUB_REF_NAME}'."
+            exit 1
+          fi
+
+          if ! printf '%s' "${RELEASE_COMMIT_SHA}" | grep -qE '^[0-9a-f]{40}$'; then
+            echo "::error::release_commit_sha must be a full 40-character commit SHA."
+            exit 1
+          fi
+          if [ "${RELEASE_COMMIT_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::release_commit_sha '${RELEASE_COMMIT_SHA}' does not match the dispatched commit '${GITHUB_SHA}'."
+            exit 1
+          fi
+
+          echo "Deployment baseline: ${GITHUB_REF_NAME} @ ${GITHUB_SHA}"
+
+      - name: Record release evidence
+        env:
+          STAGING_EVIDENCE: ${{ inputs.staging_validation_evidence }}
+          CHANGE_REFERENCE: ${{ inputs.change_reference }}
+        run: |
+          set -euo pipefail
+          if [ -z "${STAGING_EVIDENCE}" ] || [ -z "${CHANGE_REFERENCE}" ]; then
+            echo "::error::Staging validation evidence and a change reference are required."
+            exit 1
+          fi
+          {
+            echo "### Production release evidence"
+            echo ""
+            echo "- Release branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Initiated by: \`${GITHUB_ACTOR}\`"
+            echo "- Staging validation evidence: ${STAGING_EVIDENCE}"
+            echo "- Change reference: ${CHANGE_REFERENCE}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------------------------
+  # Revalidate the release baseline WITHOUT any AWS credentials.
+  # -------------------------------------------------------------------------------------------
+  validate:
+    name: Validate release baseline
+    needs: authorize
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          environment: production
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Validate release candidate
+        uses: ./.github/actions/validate-release
+        with:
+          environment: production
+
+  # -------------------------------------------------------------------------------------------
+  # Deploy. Requires protected `production` environment approval before it starts.
+  # -------------------------------------------------------------------------------------------
+  deploy-production:
+    name: Deploy OU, Identity Center, SCIM, and organization policy stacks to Production
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        id: workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          environment: production
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      # Approved ccoe-aws/reusable-workflows composite action. It derives the deployment role
+      # ARN and OIDC audience from the partition, account ID and role name, and configures the
+      # ESC STS endpoint (sts.eusc-de-east-1.amazonaws.eu) automatically.
+      - name: Configure AWS ESC credentials with OIDC
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: oidc
+          aws-partition: ${{ env.ESC_PARTITION }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          aws-session-name: lz-production-ou-${{ github.run_id }}
+
+      # Idempotent detect-or-create for the AWS Organization in the Production management
+      # account. Emits organization-id and organization-root-id as step outputs and, with
+      # ensure-scp-policy-type: 'true' and ensure-rcp-policy-type: 'true', confirms
+      # SERVICE_CONTROL_POLICY and RESOURCE_CONTROL_POLICY are both enabled on the Root before
+      # the policy stack deploys. AWS Organizations does NOT auto-enable any policy type when the
+      # Organization is created with --feature-set ALL; each type must be enabled explicitly.
+      - name: Prepare AWS Organization
+        id: prepare_org
+        uses: ./.github/actions/prepare-organization
+        with:
+          expected-account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          ensure-scp-policy-type: 'true'
+          ensure-rcp-policy-type: 'true'
+
+      # Deploys ONLY the OU Structure stack. `cdk diff` is STRICT in Production
+      # (diff-continue-on-error: 'false') to preserve the pre-refactor behaviour.
+      - name: Deploy OU Structure stack
+        uses: ./.github/actions/deploy-ou-structure
+        with:
+          environment: production
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-root-id: ${{ steps.prepare_org.outputs.organization-root-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.OU_STRUCTURE_STACK_ID }}
+          diff-continue-on-error: 'false'
+
+      - name: Deploy IAM Identity Center
+        id: identity_center
+        uses: ./.github/actions/deploy-identity-center
+        with:
+          environment: production
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          permission-sets-stack-id: ${{ env.IDENTITY_CENTER_PERMISSION_SETS_STACK_ID }}
+
+      # -----------------------------------------------------------------------------------------
+      # SCIM synchronization state machine stack. Deploys the Step Functions / Lambda pipeline
+      # that reconciles Entra ID SCIM group state against IAM Identity Center account assignments.
+      # `cdk diff` remains STRICT in Production (diff-continue-on-error: 'false'). Post-deployment
+      # validation confirms stack status and expected Lambda / StateMachine / EventsRule counts.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy SCIM synchronization stack
+        uses: ./.github/actions/deploy-scim-sync
+        with:
+          environment: production
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.SCIM_SYNC_STACK_ID }}
+          diff-continue-on-error: 'false'
+
+      # -----------------------------------------------------------------------------------------
+      # SCIM cleanup state machine stack. Deploys the Step Functions / Lambda pipeline that removes
+      # IAM Identity Center users with no remaining group memberships. `cdk diff` remains STRICT in
+      # Production (diff-continue-on-error: 'false'). Post-deployment validation confirms stack
+      # status and expected Lambda / StateMachine / EventsRule counts.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy SCIM cleanup stack
+        uses: ./.github/actions/deploy-scim-cleanup
+        with:
+          environment: production
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.SCIM_CLEANUP_STACK_ID }}
+          diff-continue-on-error: 'false'
+
+      # -----------------------------------------------------------------------------------------
+      # Organization Policy stack. Deliberately ISOLATED from the OU stack at the CloudFormation
+      # layer: no Fn::Export / Fn::ImportValue link between the two stacks, and no CDK-level
+      # addDependency in bin/landing-zone.ts. Ordering is enforced by this workflow (the OU stack
+      # deploy above completed before this section runs); OU IDs are resolved inside the
+      # composite action from the OU stack's OuId* outputs and passed as pattern-constrained
+      # CloudFormation parameters. `cdk diff` remains STRICT in Production.
+      #
+      # Neither Root ID, Organization ID nor any OU ID is stored in source config.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy Organization Policy stack
+        uses: ./.github/actions/deploy-organization-policies
+        with:
+          environment: production
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-root-id: ${{ steps.prepare_org.outputs.organization-root-id }}
+          organization-id: ${{ steps.prepare_org.outputs.organization-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.ORGANIZATION_POLICY_STACK_ID }}
+          diff-continue-on-error: 'false'
+
+      # -----------------------------------------------------------------------------------------
+      # Production shared-account creation is DEFERRED by design in this iteration.
+      #
+      # The SharedAccountsStack is validated for repository readiness in the `validate` job above
+      # (synth + template validation), but this workflow does NOT invoke `cdk deploy` against it.
+      # Production shared-account activation is a separately approved change per
+      # `.apm/instructions/shared-account-provisioning.instructions.md` §14 ("Do not invoke any
+      # Production deployment workflow/action. Do not create Production Audit or Log Archive
+      # accounts.") and the corresponding skill.
+      #
+      # If a future PR wires deployment here, use the same reusable action Staging uses:
+      # `./.github/actions/deploy-shared-accounts`.
+      # -----------------------------------------------------------------------------------------
+
+      # -----------------------------------------------------------------------------------------
+      # AWS Control Tower Landing Zone 4.0 initialisation for Production.
+      #
+      # CODE-READY, DEFERRED EXECUTION. Invokes the SAME reusable composite action that
+      # staging-deploy.yml uses (`./.github/actions/initialize-control-tower`), per
+      # `.apm/instructions/control-tower-initialization.instructions.md` §23. NO CreateLandingZone
+      # call is ever issued unless BOTH of the following are true in the same run:
+      #
+      #   1. `PRODUCTION_DEPLOYMENT_ENABLED == 'true'` on the protected `production` GitHub
+      #      Environment. This is the same gate that authorises every other deploy step in this
+      #      job; the `authorize` job above refuses to continue when it is unset.
+      #   2. The `lz-shared-accounts` CloudFormation stack has been deployed in the Production
+      #      management account/region (the shared-accounts deploy is deliberately DEFERRED per
+      #      `.apm/instructions/shared-account-provisioning.instructions.md` §14). The
+      #      resolve-shared-accounts action fails safely when the stack is absent, and this
+      #      workflow gates the composite action on its `exists` output.
+      #
+      # Production-specific gating (the shared-accounts stack existence check and the
+      # PRODUCTION_DEPLOYMENT_ENABLED / protected environment approval enforced in `authorize`)
+      # stays in this workflow. It is NOT embedded in the composite action.
+      #
+      # Shared-account IDs use the same Path A runtime resolution pattern as Staging: values come
+      # from `describe-stacks` outputs inside resolve-shared-accounts, never from configuration
+      # YAML, never through Fn::ImportValue, never through CDK cross-stack references, never
+      # persisted.
+      # -----------------------------------------------------------------------------------------
+      - name: Resolve Audit and Log Archive account IDs (Path A, read-only)
+        id: shared_accounts
+        uses: ./.github/actions/resolve-shared-accounts
+        with:
+          aws-region: ${{ env.ESC_REGION }}
+
+      - name: Initialise AWS Control Tower Landing Zone 4.0 (skipped when lz-shared-accounts is absent)
+        id: control_tower
+        if: ${{ steps.shared_accounts.outputs.exists == 'true' }}
+        uses: ./.github/actions/initialize-control-tower
+        with:
+          environment: production
+          audit-account-id: ${{ steps.shared_accounts.outputs.audit-account-id }}
+          log-archive-account-id: ${{ steps.shared_accounts.outputs.log-archive-account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Production deployment"
+            echo ""
+            echo "- Source branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Configuration: \`config/production.yaml\`"
+            echo "- Region: \`${ESC_REGION}\`"
+            echo "- Stacks deployed: \`${OU_STRUCTURE_STACK_ID}\`, \`${IDENTITY_CENTER_PERMISSION_SETS_STACK_ID}\`, \`${SCIM_SYNC_STACK_ID}\`, \`${SCIM_CLEANUP_STACK_ID}\`, \`${ORGANIZATION_POLICY_STACK_ID}\` (OU/policy stacks deployed independently; no CloudFormation Export / Fn::ImportValue)"
+            echo "- IAM Identity Center instance: ${{ steps.identity_center.outputs.instance-arn }}"
+            echo "- IAM Identity Center runtime reconciliation: see job result (10 Permission Sets, zero assignments expected)"
+            echo "- Expected OUs: 14"
+            echo "- OU IDs threaded to policy stack: 14 (as \`OuId*\` CloudFormation parameters)"
+            echo "- SCP policy-type status: \`${{ steps.prepare_org.outputs.service-control-policy-status }}\`"
+            echo "- RCP policy-type status: \`${{ steps.prepare_org.outputs.resource-control-policy-status }}\`"
+            echo "- Deployment hold: none (config/default.yaml governance.disabledPolicies is empty)"
+            echo "- Account-level attachments: none (deferred)"
+            echo "- Shared accounts (Audit / Log Archive): NOT deployed to Production in this iteration; \`${SHARED_ACCOUNTS_STACK_ID}\` was synthesized and validated for readiness only"
+            echo "- Control Tower management-account prerequisite roles: NOT deployed to Production in this iteration; \`${CONTROL_TOWER_ROLES_STACK_ID}\` was synthesized and validated for readiness only"
+            echo "- Control Tower Landing Zone version: \`4.0\` (--landing-zone-version 4.0)"
+            echo "- Control Tower shared-accounts prerequisite present: \`${{ steps.shared_accounts.outputs.exists }}\` (Production shared-accounts deploy is currently deferred; when it is separately approved, CT init runs on the next dispatch)"
+            echo "- Control Tower pre-existing Landing Zone detected: \`${{ steps.control_tower.outputs.landing-zone-exists }}\`"
+            echo "- Control Tower Landing Zone ARN: \`${{ steps.control_tower.outputs.landing-zone-arn }}\`"
+            echo "- Control Tower CreateLandingZone invoked this run: \`${{ steps.control_tower.outputs.operation-identifier != '' }}\`"
+            echo "- Control Tower operation identifier (this run): \`${{ steps.control_tower.outputs.operation-identifier }}\`"
+            echo "- Bootstrap executed: no"
+            echo "- Long-lived credentials used: no (GitHub OIDC only)"
+            echo ""
+            echo "Create the immutable SemVer Git tag only after successful Production validation."
+          } >> "$GITHUB_STEP_SUMMARY"

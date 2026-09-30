@@ -1,0 +1,160 @@
+# =============================================================================================
+# Manually start one of the deployed SCIM state machines in the selected environment.
+#
+# This workflow does not deploy or configure SCIM. It starts the existing AWS Step Functions
+# state machine after resolving its ARN from the corresponding CloudFormation stack.
+# =============================================================================================
+name: run-scim
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: SCIM operation to run
+        required: true
+        type: choice
+        options:
+          - provision
+          - cleanup
+      environment:
+        description: AWS environment in which to run the operation
+        required: true
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+
+concurrency:
+  group: run-scim-${{ inputs.environment }}
+  cancel-in-progress: false
+
+env:
+  ESC_PARTITION: eusc
+  ESC_REGION: eusc-de-east-1
+  DEPLOYMENT_ROLE_NAME: github-actions-role
+
+jobs:
+  run-scim:
+    name: Run SCIM ${{ inputs.operation }} in ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    steps:
+      - name: Confirm Production execution is authorised
+        if: ${{ inputs.environment == 'production' }}
+        env:
+          PRODUCTION_DEPLOYMENT_ENABLED: ${{ vars.PRODUCTION_DEPLOYMENT_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [ "${PRODUCTION_DEPLOYMENT_ENABLED:-}" != "true" ]; then
+            echo "::error::Production SCIM execution is not authorised. Set PRODUCTION_DEPLOYMENT_ENABLED to 'true' after approval."
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        id: workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          environment: ${{ inputs.environment }}
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Configure AWS ESC credentials with OIDC
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: oidc
+          aws-partition: ${{ env.ESC_PARTITION }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          aws-session-name: scim-${{ inputs.operation }}-${{ inputs.environment }}-${{ github.run_id }}
+
+      - name: Resolve state machine ARN
+        id: state-machine
+        env:
+          OPERATION: ${{ inputs.operation }}
+          AWS_REGION_NAME: ${{ env.ESC_REGION }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "${OPERATION}" in
+            provision)
+              STACK_NAME='lz-scim-sync'
+              ;;
+            cleanup)
+              STACK_NAME='lz-scim-cleanup'
+              ;;
+            *)
+              echo "::error::Unsupported SCIM operation '${OPERATION}'."
+              exit 1
+              ;;
+          esac
+
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION_NAME}" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          case "${STACK_STATUS}" in
+            CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+            *)
+              echo "::error::SCIM stack '${STACK_NAME}' is not ready; status is '${STACK_STATUS}'."
+              exit 1
+              ;;
+          esac
+
+          STATE_MACHINE_ARN=$(aws cloudformation describe-stack-resources \
+            --stack-name "${STACK_NAME}" \
+            --region "${AWS_REGION_NAME}" \
+            --query "StackResources[?ResourceType=='AWS::StepFunctions::StateMachine'].PhysicalResourceId | [0]" \
+            --output text)
+
+          if ! printf '%s' "${STATE_MACHINE_ARN}" | grep -qE '^arn:aws-eusc:states:eusc-de-east-1:[0-9]{12}:stateMachine:.+$'; then
+            echo "::error::Resolved state-machine ARN is missing or is not an AWS ESC ARN."
+            exit 1
+          fi
+
+          echo "stack-name=${STACK_NAME}" >> "$GITHUB_OUTPUT"
+          echo "state-machine-arn=${STATE_MACHINE_ARN}" >> "$GITHUB_OUTPUT"
+
+      - name: Start SCIM state machine
+        env:
+          OPERATION: ${{ inputs.operation }}
+          ENVIRONMENT_NAME: ${{ inputs.environment }}
+          STATE_MACHINE_ARN: ${{ steps.state-machine.outputs.state-machine-arn }}
+          AWS_REGION_NAME: ${{ env.ESC_REGION }}
+          EXECUTION_NAME: scim-${{ inputs.operation }}-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INPUT=$(printf '{"correlationId":"github-%s-%s"}' \
+            "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}")
+
+          EXECUTION_ARN=$(aws stepfunctions start-execution \
+            --state-machine-arn "${STATE_MACHINE_ARN}" \
+            --name "${EXECUTION_NAME}" \
+            --input "${INPUT}" \
+            --region "${AWS_REGION_NAME}" \
+            --query 'executionArn' \
+            --output text)
+
+          echo "Started SCIM ${OPERATION} execution: ${EXECUTION_ARN}"
+          {
+            echo "### SCIM execution"
+            echo ""
+            echo "- Operation: ${OPERATION}"
+            echo "- Environment: ${ENVIRONMENT_NAME}"
+            echo "- State machine: ${STATE_MACHINE_ARN}"
+            echo "- Execution: ${EXECUTION_ARN}"
+          } >> "$GITHUB_STEP_SUMMARY"

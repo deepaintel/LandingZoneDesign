@@ -1,0 +1,73 @@
+name: validate-release
+description: >
+  Non-deploying revalidation of a release candidate: build, typecheck, lint, tests, per-environment
+  CDK synth, per-environment synthesized-template validators (OU, Identity Center, organization
+  policies, shared accounts), and per-environment Control Tower Landing Zone 4.0 manifest
+  validation. Reused by the `validate` jobs in staging-deploy.yml and production-deploy.yml per
+  `.apm/instructions/landing-zone-ou-governance.instructions.md` §22.
+  Requires the workspace to be prepared (see setup-workspace) before invocation. Never touches AWS
+  and never configures AWS credentials.
+inputs:
+  environment:
+    description: Target environment (`staging` or `production`). Passed to every reused script.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Build (strict TypeScript)
+      shell: bash
+      run: pnpm run build
+
+    - name: Typecheck tests
+      shell: bash
+      run: pnpm run typecheck
+
+    - name: Lint
+      shell: bash
+      run: pnpm run lint
+
+    - name: Unit and CDK assertion tests
+      shell: bash
+      run: pnpm test
+
+    - name: CDK synth
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: pnpm run "synth:${ENVIRONMENT_NAME}"
+
+    - name: Validate synthesized OU template
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: pnpm run validate:ou-template -- --environment "${ENVIRONMENT_NAME}" --output-dir "cdk.out/${ENVIRONMENT_NAME}"
+
+    - name: Validate synthesized Identity Center template
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: pnpm run validate:identity-center-template -- --environment "${ENVIRONMENT_NAME}" --output-dir "cdk.out/${ENVIRONMENT_NAME}"
+
+    - name: Validate synthesized SCIM synchronization template
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: pnpm run validate:scim-sync-template -- --environment "${ENVIRONMENT_NAME}" --output-dir "cdk.out/${ENVIRONMENT_NAME}"
+
+    - name: Validate synthesized policy template
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: pnpm run validate:policy-template -- --environment "${ENVIRONMENT_NAME}" --output-dir "cdk.out/${ENVIRONMENT_NAME}"
+
+    - name: Validate synthesized shared-accounts template
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: pnpm run validate:accounts-template -- --environment "${ENVIRONMENT_NAME}" --output-dir "cdk.out/${ENVIRONMENT_NAME}"
+
+    - name: Validate Control Tower Landing Zone 4.0 manifest
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: pnpm run validate:control-tower-manifest -- --environment "${ENVIRONMENT_NAME}"

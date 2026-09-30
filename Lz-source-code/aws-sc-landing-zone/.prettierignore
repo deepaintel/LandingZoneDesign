@@ -1,0 +1,12 @@
+node_modules/
+cdk.out/
+dist/
+coverage/
+pnpm-lock.yaml
+apm.lock.yaml
+
+# Design documentation carried into this repository; formatting is owned elsewhere.
+global-cloud-tagging-strategy.md
+
+# Ignore all md files
+**/*.md

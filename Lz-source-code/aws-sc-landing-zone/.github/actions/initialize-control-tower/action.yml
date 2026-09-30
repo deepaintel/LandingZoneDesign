@@ -1,0 +1,229 @@
+name: initialize-control-tower
+description: >
+  Idempotently initialize AWS Control Tower Landing Zone 4.0 in the AWS European Sovereign Cloud
+  management account currently addressed by the caller's AWS credentials. Runs the
+  check-existing → preinit → CreateLandingZone → poll → postinit sequence and safely no-ops when
+  a Landing Zone already exists in this account/region.
+  Reused by both staging-deploy.yml and production-deploy.yml per
+  `.apm/instructions/control-tower-initialization.instructions.md` §23 and
+  `.apm/skills/initialize-control-tower/SKILL.md` ("Deployment Pattern").
+  Requires the calling workflow to have already: checked out the repository, set up Node.js and
+  PNPM with dependencies installed, and configured AWS credentials (typically via the reusable
+  `aws-credentials` composite action). The action does not re-setup the workspace and does not
+  reconfigure credentials.
+  Environment-specific gating (Production `PRODUCTION_DEPLOYMENT_ENABLED`, protected environment
+  approval, `lz-shared-accounts` prerequisite check) lives in the calling workflow and is not
+  duplicated here.
+
+inputs:
+  environment:
+    description: >
+      Target environment (`staging` or `production`). Threaded to the underlying tsx scripts via
+      `--environment` and used for diagnostic output.
+    required: true
+  audit-account-id:
+    description: >
+      12-digit Audit account ID resolved at workflow runtime from the `lz-shared-accounts`
+      CloudFormation stack (Path A per instruction §6). Never sourced from configuration YAML.
+      The caller must validate the 12-digit format before invoking this action; the action
+      revalidates defensively.
+    required: true
+  log-archive-account-id:
+    description: >
+      12-digit Log Archive account ID resolved at workflow runtime from the `lz-shared-accounts`
+      CloudFormation stack (Path A per instruction §6). Never sourced from configuration YAML.
+    required: true
+  aws-region:
+    description: AWS ESC region for Control Tower API calls.
+    required: false
+    default: eusc-de-east-1
+
+outputs:
+  landing-zone-arn:
+    description: >
+      ARN of the Landing Zone. Populated whether the action created a new Landing Zone or
+      discovered a pre-existing one via the idempotency gate.
+    value: ${{ steps.resolve_arn.outputs.landing-zone-arn }}
+  operation-identifier:
+    description: >
+      CreateLandingZone operation identifier when initialization ran this invocation. Empty
+      when initialization was skipped because a Landing Zone already existed.
+    value: ${{ steps.initialize.outputs.operation-identifier }}
+  landing-zone-exists:
+    description: >
+      `"true"` if a Landing Zone already existed in the account/region when this action started;
+      `"false"` if the action invoked `CreateLandingZone` this run.
+    value: ${{ steps.check_landing_zone.outputs.landing-zone-exists }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate shared-account inputs (defensive revalidation)
+      shell: bash
+      env:
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+      run: |
+        set -euo pipefail
+        for label_value in "audit-account-id=${AUDIT_ACCOUNT_ID}" "log-archive-account-id=${LOG_ARCHIVE_ACCOUNT_ID}"; do
+          label="${label_value%%=*}"
+          value="${label_value#*=}"
+          if ! printf '%s' "${value}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::${label} '${value}' is not a 12-digit AWS account ID."
+            exit 1
+          fi
+        done
+        if [ "${AUDIT_ACCOUNT_ID}" = "${LOG_ARCHIVE_ACCOUNT_ID}" ]; then
+          echo "::error::audit-account-id and log-archive-account-id must differ."
+          exit 1
+        fi
+        echo "Input validation passed. Audit=${AUDIT_ACCOUNT_ID} LogArchive=${LOG_ARCHIVE_ACCOUNT_ID}"
+
+    - name: Check for existing Control Tower Landing Zone (idempotency gate)
+      id: check_landing_zone
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+
+        LZ_JSON=$(aws controltower list-landing-zones \
+          --region "${AWS_REGION}" \
+          --query 'landingZones[].arn' \
+          --output json)
+        LZ_COUNT=$(printf '%s' "${LZ_JSON}" | jq 'length')
+
+        if [ "${LZ_COUNT}" -eq 0 ]; then
+          echo "landing-zone-exists=false" >> "$GITHUB_OUTPUT"
+          echo "landing-zone-arn=" >> "$GITHUB_OUTPUT"
+          echo "No Control Tower Landing Zone present in this account/region. Initialisation will proceed."
+        else
+          EXISTING_ARN=$(printf '%s' "${LZ_JSON}" | jq -r '.[0]')
+          echo "landing-zone-exists=true" >> "$GITHUB_OUTPUT"
+          echo "landing-zone-arn=${EXISTING_ARN}" >> "$GITHUB_OUTPUT"
+          echo "Control Tower Landing Zone already exists (${EXISTING_ARN}). Skipping CreateLandingZone."
+          echo "This is expected on every deploy after the first release-branch initialisation - the action is idempotent."
+        fi
+
+    - name: Enable AWS Organizations trusted access for Control Tower prerequisites
+      # Required by the CreateLandingZone API path per
+      # `.apm/instructions/control-tower-initialization.instructions.md` §6.1. Enabling trusted
+      # access is idempotent and one-time-per-organization; the script skips already-enabled
+      # principals. Auto-creates the AWSServiceRoleForAWSControlTower service-linked role.
+      if: steps.check_landing_zone.outputs.landing-zone-exists == 'false'
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+        "${GITHUB_WORKSPACE}/.github/scripts/enable-org-trusted-access.sh" "${AWS_REGION}"
+
+    - name: Create inspection roles in Audit and Log Archive accounts (for Config/CloudTrail conflict check)
+      if: steps.check_landing_zone.outputs.landing-zone-exists == 'false'
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+      run: |
+        set -euo pipefail
+
+        INSPECTION_ROLE_NAME="LZ-PreInit-Inspection"
+        MANAGEMENT_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+        # Call the reusable script to create inspection roles
+        # Script is located at: .github/scripts/create-inspection-role.sh
+
+        # Create inspection role in Audit account
+        echo "Creating inspection role in Audit account (${AUDIT_ACCOUNT_ID})..."
+        "${GITHUB_WORKSPACE}/.github/scripts/create-inspection-role.sh" \
+          "${AUDIT_ACCOUNT_ID}" \
+          "${INSPECTION_ROLE_NAME}" \
+          "${MANAGEMENT_ACCOUNT_ID}" \
+          "${AWS_REGION}"
+
+        # Create inspection role in Log Archive account
+        echo "Creating inspection role in Log Archive account (${LOG_ARCHIVE_ACCOUNT_ID})..."
+        "${GITHUB_WORKSPACE}/.github/scripts/create-inspection-role.sh" \
+          "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          "${INSPECTION_ROLE_NAME}" \
+          "${MANAGEMENT_ACCOUNT_ID}" \
+          "${AWS_REGION}"
+
+    - name: Pre-initialisation checks (skipped when Landing Zone already exists)
+      if: steps.check_landing_zone.outputs.landing-zone-exists == 'false'
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+      run: |
+        set -euo pipefail
+        pnpm run preinit:control-tower -- \
+          --environment "${ENVIRONMENT_NAME}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --inspection-role-name "LZ-PreInit-Inspection"
+
+    - name: Initialise Control Tower Landing Zone 4.0 (skipped when Landing Zone already exists)
+      id: initialize
+      if: steps.check_landing_zone.outputs.landing-zone-exists == 'false'
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+      run: |
+        set -euo pipefail
+        pnpm run initialize:control-tower -- \
+          --environment "${ENVIRONMENT_NAME}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          | tee initialize.log
+
+        NEW_ARN=$(grep -E '^  Landing Zone ARN:' initialize.log | awk '{print $NF}' || true)
+        NEW_OP=$(grep -E '^  Operation identifier:' initialize.log | awk '{print $NF}' || true)
+        echo "landing-zone-arn=${NEW_ARN}" >> "$GITHUB_OUTPUT"
+        echo "operation-identifier=${NEW_OP}" >> "$GITHUB_OUTPUT"
+
+    - name: Resolve final Landing Zone ARN (newly created or pre-existing)
+      id: resolve_arn
+      shell: bash
+      env:
+        NEW_ARN: ${{ steps.initialize.outputs.landing-zone-arn }}
+        EXISTING_ARN: ${{ steps.check_landing_zone.outputs.landing-zone-arn }}
+      run: |
+        set -euo pipefail
+        if [ -n "${NEW_ARN}" ]; then
+          LZ_ARN="${NEW_ARN}"
+        else
+          LZ_ARN="${EXISTING_ARN}"
+        fi
+        echo "landing-zone-arn=${LZ_ARN}" >> "$GITHUB_OUTPUT"
+        if [ -z "${LZ_ARN}" ]; then
+          echo "Landing Zone ARN is empty; post-initialisation validation will fail-fast in the next step."
+        else
+          echo "Resolved Landing Zone ARN for post-init validation: ${LZ_ARN}"
+        fi
+
+    - name: Post-initialisation validation (runs against newly created or pre-existing Landing Zone)
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        LZ_ARN: ${{ steps.resolve_arn.outputs.landing-zone-arn }}
+      run: |
+        set -euo pipefail
+        if [ -z "${LZ_ARN}" ]; then
+          echo "::error::No Landing Zone ARN available for post-init validation."
+          exit 1
+        fi
+        pnpm run postinit:control-tower -- \
+          --environment "${ENVIRONMENT_NAME}" \
+          --landing-zone-arn "${LZ_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}"

@@ -1,0 +1,306 @@
+aws:
+  # AWS European Sovereign Cloud. Commercial partitions and Regions are rejected by the validator.
+  partition: aws-eusc
+  region: eusc-de-east-1
+
+organization:
+  # Approved OU hierarchy.
+  #   `name`   - slash-delimited hierarchy path. The first segment is always attached to the
+  #              existing Organizations Root; later segments are attached to their preceding OU.
+  #              Stable keys and parent references are derived by the Zod schema.
+  organizationalUnits:
+    - name: Security
+      description: Security tooling and audit accounts.
+    - name: Infrastructure
+      description: Shared infrastructure and shared services accounts.
+    - name: Sandbox
+      description: Time-boxed experimentation accounts.
+    - name: Suspended
+      description: Quarantine for decommissioned or suspended accounts.
+    - name: Workloads
+      description: Parent OU for all business workload accounts.
+    - name: Workloads/Hybrid
+      description: Hybrid (on-premises integrated) workload domain.
+    - name: Workloads/Online
+      description: Online / internet-facing workload domain.
+    - name: Workloads/Corp
+      description: Corporate / internal workload domain.
+    - name: Workloads/Hybrid/Prod
+      description: Production accounts for the Hybrid workload domain.
+    - name: Workloads/Hybrid/Non-Prod
+      description: Non-production accounts for the Hybrid workload domain.
+    - name: Workloads/Online/Prod
+      description: Production accounts for the Online workload domain.
+    - name: Workloads/Online/Non-Prod
+      description: Non-production accounts for the Online workload domain.
+    - name: Workloads/Corp/Prod
+      description: Production accounts for the Corp workload domain.
+    - name: Workloads/Corp/Non-Prod
+      description: Non-production accounts for the Corp workload domain.
+
+identityCenter:
+  # Unique display name for the IAM Identity Center instance (console "Instance name" field).
+  # Enforced by the deploy-identity-center composite action via `aws sso-admin update-instance`.
+  # Overridden per environment in config/staging.yaml and config/production.yaml so the two
+  # separate AWS Organizations' instances are distinguishable from each other.
+  instanceName: aws-esc-landing-zone
+  permissionSets:
+    - name: PlatformAdmin-PS
+      purpose: Privileged Landing Zone administration
+      accessLevel: admin
+      productionAccess: jit-only
+      sessionDuration: PT1H
+      managedPolicies:
+        - AdministratorAccess
+    - name: PlatformEngineer-PS
+      purpose: Platform engineering, deployment support, and validation
+      accessLevel: power-user
+      productionAccess: narrowly-scoped
+      sessionDuration: PT1H
+      managedPolicies:
+        - PowerUserAccess
+    - name: ComplianceReadOnly-PS
+      purpose: Compliance and audit review
+      accessLevel: read-only
+      productionAccess: read-only
+      sessionDuration: PT1H
+      managedPolicies:
+        - ReadOnlyAccess
+    - name: SecurityReadOnly-PS
+      purpose: Security findings and control validation
+      accessLevel: read-only
+      productionAccess: read-only
+      sessionDuration: PT1H
+      managedPolicies:
+        - SecurityAudit
+    - name: SecurityAdmin-PS
+      purpose: Scoped security administration
+      accessLevel: security-admin
+      productionAccess: narrowly-scoped
+      sessionDuration: PT1H
+      managedPolicies:
+        - SecurityAudit
+    - name: NetworkAdmin-PS
+      purpose: Central network administration
+      accessLevel: network-admin
+      productionAccess: narrowly-scoped
+      sessionDuration: PT1H
+      managedPolicies:
+        - job-function/NetworkAdministrator
+    - name: KMSAdmin-PS
+      purpose: KMS administration
+      accessLevel: kms-admin
+      productionAccess: narrowly-scoped
+      sessionDuration: PT1H
+      managedPolicies:
+        - AWSKeyManagementServicePowerUser
+    - name: LoggingAdmin-PS
+      purpose: Central logging administration
+      accessLevel: logging-admin
+      productionAccess: narrowly-scoped
+      sessionDuration: PT1H
+      managedPolicies:
+        - CloudWatchLogsFullAccess
+    - name: WorkloadAdmin-PS
+      purpose: Scoped workload administration
+      accessLevel: scoped-admin
+      productionAccess: jit-only
+      sessionDuration: PT1H
+      managedPolicies:
+        - PowerUserAccess
+    - name: ReadOnly-PS
+      purpose: General read-only troubleshooting and inspection
+      accessLevel: read-only
+      productionAccess: read-only
+      sessionDuration: PT8H # approved exception: read-only access carries no write/escalation risk
+      managedPolicies:
+        - ReadOnlyAccess
+  groupMappings: []
+  accountAssignments: []
+  scim:
+    checkForScimSync: 21600 # 6 hours
+    queryAccountAssignmentStatus: 5 # 5 seconds
+  scimCleanup:
+    checkForScimCleanup: 21600 # 6 hours
+
+# ---------------------------------------------------------------------------------------------
+# Governance metadata for the approved SCP / RCP catalogue (ESC_SCP_Design_Catalogue_v2).
+#
+# The design catalogue documents policy exemptions in prose ("the CDK pipeline role", "the
+# AdministratorRole (break-glass)", "the approved FinOps role") but never supplies a role name or
+# ARN. Those names therefore live here rather than inside policy documents: reviewable in one place,
+# environment-overridable, and correctable through a normal GitOps change.
+#
+# Entries are IAM role NAMES or role PATHS relative to `role/`. Never full ARNs, never account IDs.
+# The policy layer expands each entry to `arn:aws-eusc:iam::*:role/<entry>`, keeping the account
+# segment a wildcard so no AWS account identifier enters source control.
+# ---------------------------------------------------------------------------------------------
+governance:
+  policyExemptions:
+    # Deployment identity chain, VERIFIED against aws-sc-foundation:
+    #   .github/workflows/01-bootstrap-cdk.yaml runs `npx aws-cdk@2 bootstrap aws://<acct>/eusc-de-east-1`
+    #   with no --qualifier and no --toolkit-stack-name, so the DEFAULT CDK bootstrap qualifier
+    #   `hnb659fds` applies. `github-actions-role` is created by
+    #   packages/identity-provider/lib/identity-provider-stack.ts.
+    #
+    # The approved IAM design (section 4.7) and GitOps design both document the chain as:
+    #   GitHub Actions -> OIDC -> github-actions-role -> sts:AssumeRole into the CDK bootstrap roles
+    #   for lookup, asset publishing and CloudFormation deployment -> CloudFormation.
+    #
+    # The CloudFormation execution role is therefore the EFFECTIVE principal for most guarded API
+    # calls; exempting only `github-actions-role` would let the guardrails block the approved
+    # pipeline itself. Account and Region segments stay wildcards so no account ID enters source.
+    pipelineRoles:
+      - github-actions-role
+      - cdk-hnb659fds-deploy-role-*
+      - cdk-hnb659fds-cfn-exec-role-*
+      - cdk-hnb659fds-lookup-role-*
+    # CDK asset publication only. Applied narrowly (SCP-ESC-WL-001 S3 PutObject) so that an
+    # asset-upload identity is never exempted from unrelated guardrails.
+    assetPublishingRoles:
+      - cdk-hnb659fds-file-publishing-role-*
+    # Break-glass administrator role, per the approved IAM design sections 3.2, 6.2 and 8.3. The
+    # SCP catalogue's "AdministratorRole" is a documentation defect: the IAM design is authoritative
+    # for IAM role names. A console-only break-glass IAM user in the Management account assumes this
+    # role, so it is a plain IAM role rather than an IAM Identity Center permission set.
+    breakGlassRoles:
+      - LZ-BreakGlass-Admin
+    # Approved FinOps role permitted to purchase reservations (SCP catalogue section 6.4).
+    # STILL UNRESOLVED: no approved design document names this role - the SCP catalogue calls it
+    # only "the approved FinOps role", and it does not appear in the IAM design role catalogue.
+    finOpsRoles:
+      - FinOpsRole
+    # KMS administrator roles, exempt from the MFA condition on the KMS key-loss statements per the
+    # approved KMS design sections 5.1.1 and 7.3 (approved administrative or service roles).
+    # LZ-KMSAdmin-PermissionSet is an IAM Identity Center permission set, so the concrete role is
+    # AWSReservedSSO_<permission-set>_<suffix> under the aws-reserved/sso.amazonaws.com/ path. The
+    # leading wildcard absorbs the optional Region path segment.
+    # PENDING VERIFICATION of the Identity Center role path once IAM Identity Center is deployed.
+    kmsAdministratorRoles:
+      - aws-reserved/sso.amazonaws.com/*AWSReservedSSO_LZ-KMSAdmin-PermissionSet_*
+    # Network administration roles (SCP-ESC-INF-001). Resolved from the approved IAM design sections
+    # 3.2 and 4.1.2: LZ-NetworkAdmin-PermissionSet governs centralized networking in the Shared
+    # Services Account. Same Identity Center role-path form as kmsAdministratorRoles above.
+    networkAdministratorRoles:
+      - aws-reserved/sso.amazonaws.com/*AWSReservedSSO_LZ-NetworkAdmin-PermissionSet_*
+    # IAM Identity Center service-linked role (SCP catalogue section 5.1).
+    # PENDING CONFIRMATION of the service-linked role path in the aws-eusc partition.
+    identityCenterServiceRoles:
+      - aws-service-role/sso.amazonaws.com/AWSServiceRoleForSSO
+    # AWS Organizations service-linked role (SCP catalogue section 3.1).
+    organizationsServiceRoles:
+      - aws-service-role/organizations.amazonaws.com/AWSServiceRoleForOrganizations
+    # AWS Control Tower compatibility exemptions (governed by
+    # `.apm/instructions/control-tower-scp-compatibility.instructions.md` and applied only to the
+    # in-scope SCP statements identified in the approved compatibility plan). Documented AWS
+    # service-linked role name is `AWSServiceRoleForAWSControlTower`; it is the API caller for
+    # Organizations policy lifecycle (SCP-ESC-ROOT-003) and, in the management account, for the
+    # optional Control Tower-managed organization CloudTrail lifecycle (SCP-ESC-SEC-001
+    # ScpEscSec001ProtectCloudTrail). Kept as a role path so the account segment stays a wildcard
+    # and never enters source. Populating this list does not imply any change to unrelated SCPs.
+    controlTowerServiceLinkedRoles:
+      - aws-service-role/controltower.amazonaws.com/AWSServiceRoleForAWSControlTower
+    # AWS Control Tower member-account execution role. Created by Control Tower in every managed
+    # account; the AWS Control Tower baseline calls member-account AWS Config recorder / delivery
+    # channel actions (SCP-ESC-SEC-001 ScpEscSec001ProtectConfigRecorder), Log Archive bucket-policy
+    # lifecycle actions (SCP-ESC-SEC-002) and the Audit-account Config aggregator lifecycle
+    # (SCP-ESC-SEC-003) as this role.
+    controlTowerExecutionRoles:
+      - AWSControlTowerExecution
+  # Extension point for SCP-ESC-ROOT-004. The approved ESC service catalogue is NOT contained in
+  # the design document, so no allowlist is inferred and the approved-service-boundary statement is
+  # omitted. Populating this list activates that statement inside the EXISTING ROOT-004 policy - no
+  # new SCP, no new attachment, no OU restructuring.
+  approvedServiceBoundary:
+    services: []
+  # Deployment hold list. Policies named here keep their CDK code but are NOT synthesized into the
+  # organization policy stack and NOT attached at deploy time. This is the minimum-safe mechanism
+  # for holding an approved policy pending an external precondition.
+  #
+  # SCP-ESC-WL-004 was previously held pending reconciliation between the SCP catalogue's PascalCase
+  # 4-key mandatory tag set and the enterprise `global-cloud-tagging-strategy.md` v1.8 lowercase P1
+  # deny-effect keys. That reconciliation is now applied in code: WL-004 enforces the enterprise
+  # standard verbatim (7 mandatory keys, 4 with fixed-vocabulary value constraints, tag removal
+  # denied). The hold is therefore lifted.
+  disabledPolicies: []
+
+# ---------------------------------------------------------------------------------------------
+# Shared Control-Tower onboarding accounts (Audit / Log Archive).
+#
+# Governed by `.apm/instructions/shared-account-provisioning.instructions.md` and
+# `.apm/skills/generate-account/SKILL.md`. Environment-invariant fields live here; per-environment
+# `email` and `securityContact` are declared in config/<env>.yaml.
+#
+# Names, target OU (`Security`), owner (`CCoE`), costCentre (`AISARCH`) and operationsContact
+# (`cloud@if.eu`) do not differ between Staging and Production per the approved workbook.
+#
+# `owner` / `costCentre` are metadata for later use (tagging is a separate approved phase and is
+# NOT applied here). `securityContact` / `operationsContact` remain metadata until alternate
+# account contact configuration is separately approved. No account IDs live in configuration -
+# AWS generates them, and the deploy workflow surfaces them through stack outputs.
+# ---------------------------------------------------------------------------------------------
+accounts:
+  logArchive:
+    name: 'Log Archive'
+    ouPath: 'Security'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    operationsContact: 'cloud@if.eu'
+  audit:
+    name: 'Audit'
+    ouPath: 'Security'
+    owner: 'CCoE'
+    costCentre: 'AISARCH'
+    operationsContact: 'cloud@if.eu'
+
+# ---------------------------------------------------------------------------------------------
+# AWS Control Tower Landing Zone 4.0 configuration.
+#
+# Governed by `.apm/instructions/control-tower-initialization.instructions.md` and
+# `.apm/skills/initialize-control-tower/SKILL.md`. Every integration `enabled` flag is EXPLICIT -
+# instruction §8 forbids relying on implicit defaults.
+#
+# Audit and Log Archive account IDs are DELIBERATELY absent from configuration. Those IDs are
+# resolved at deployment time from the `AccountIdAudit` / `AccountIdLogArchive` outputs of the
+# deployed `lz-shared-accounts` stack (Path A) and passed explicitly to the initializer as CLI
+# inputs. See instruction §14 and shared-account-provisioning §7 for the rationale (no
+# CloudFormation Export/Import, no CDK cross-stack references, no source-persisted IDs solely for
+# Control Tower initialization).
+#
+# INTEGRATION VALUES BELOW ARE THE APPROVED COMMON BASELINE for both Staging and Production.
+# The customer-approved decisions are:
+#   controlTower.centralizedLogging.enabled = true
+#   controlTower.config.enabled              = true
+#   controlTower.securityRoles.enabled       = true
+#   controlTower.accessManagement.enabled    = false
+#   controlTower.backup.enabled              = false
+#
+# Environment-specific retention values live in config/staging.yaml and config/production.yaml:
+#   Staging     -> loggingBucket / accessLoggingBucket retentionDays: 180  (both centralizedLogging
+#                  and config integrations)
+#   Production  -> loggingBucket / accessLoggingBucket retentionDays: 1825 (both centralizedLogging
+#                  and config integrations)
+#
+# `kmsKeyArn` is DELIBERATELY OMITTED from both `centralizedLogging.configurations` and
+# `config.configurations` for the initial deployment. The Landing Zone 4.0 schema treats it as
+# optional; when omitted AWS Control Tower applies its standard/default encryption configuration
+# to both integrations. A customer-managed KMS key can be added later via a separate approved
+# governance change - the Zod schema already accepts an ESC-pattern-constrained ARN under
+# `centralizedLogging.configurations.kmsKeyArn` and `config.configurations.kmsKeyArn`.
+#
+# `backup.enabled` is locked to `false` at the Zod schema level per instruction §13.
+# ---------------------------------------------------------------------------------------------
+controlTower:
+  version: '4.0'
+  governedRegions:
+    - 'eusc-de-east-1'
+  centralizedLogging:
+    enabled: true
+  config:
+    enabled: true
+  securityRoles:
+    enabled: true
+  accessManagement:
+    enabled: false
+  backup:
+    enabled: false

@@ -1,0 +1,273 @@
+name: deploy-landing-zone-accounts
+description: >
+  Derive the active Landing Zone account manifest from validated environment configuration,
+  resolve the corresponding `OuId*` outputs from the deployed OU Structure stack, deploy the
+  Landing Zone Accounts stack (`lz-landing-zone-accounts`) which creates the configured
+  SecurityTooling / SharedServices / Network / CCoE validation accounts under the correct OU
+  with the mandatory P1 tag set applied at creation, then run post-deployment validation.
+  Reused from staging-deploy.yml per
+  `.apm/instructions/landing-zone-account-provisioning.instructions.md` §17 and
+  `.apm/skills/generate-account/SKILL.md`. Deliberately separate from `deploy-shared-accounts`
+  so the Audit / Log Archive Path A contract remains scoped to that action.
+  Requires AWS credentials to be configured before this action runs (typically via the reusable
+  `aws-credentials` composite action) and the OU stack to have been deployed first. The account
+  inventory comes from configuration - the composite action must not receive a hand-maintained
+  duplicate list. Does not introduce CloudFormation Export / ImportValue coupling or CDK
+  cross-stack references; OU IDs flow via `describe-stacks` -> `--parameters`. Does not perform
+  OIDC authentication or request `id-token: write`.
+inputs:
+  environment:
+    description: Target environment (`staging` or `production`). Passed to `cdk` via `-c environment=...`.
+    required: true
+  account-id:
+    description: 12-digit AWS account ID the CDK stack deploys into. Sets `CDK_DEFAULT_ACCOUNT`.
+    required: true
+  aws-region:
+    description: AWS region for CloudFormation and Organizations API calls.
+    required: false
+    default: eusc-de-east-1
+  stack-id:
+    description: CDK construct ID of the Landing Zone Accounts stack.
+    required: false
+    default: LandingZoneAccountsStack
+  ou-stack-name:
+    description: CloudFormation stack name of the deployed OU Structure stack.
+    required: false
+    default: lz-ou-structure
+  accounts-stack-name:
+    description: CloudFormation stack name of the Landing Zone Accounts stack.
+    required: false
+    default: lz-landing-zone-accounts
+  diff-continue-on-error:
+    description: >
+      When `'true'`, a non-zero `cdk diff` exit code does not fail the step. Preserves the
+      pre-existing advisory-diff posture used by every other Staging deploy composite action.
+    required: false
+    default: 'false'
+outputs:
+  account-count:
+    description: Number of active Landing Zone accounts deployed by this run (from validated configuration).
+    value: ${{ steps.validate.outputs.account-count }}
+  account-ids:
+    description: Newline-delimited `<key>=<12-digit account id>` pairs for every account instantiated in this run.
+    value: ${{ steps.validate.outputs.account-ids }}
+runs:
+  using: composite
+  steps:
+    # Staging-only guard for the current account-provisioning feature. The underlying schema /
+    # construct / composite-action code is architecturally environment-neutral, but the current
+    # approved scope does not authorise Production Landing Zone account provisioning. Removing
+    # this guard requires a separately approved change that also authorises Production account
+    # inventory and workflow wiring. Kept as a fail-fast step so an accidental Production
+    # invocation stops before any AWS API call is issued.
+    - name: Refuse Production execution (Staging-only scope)
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        if [ "${ENVIRONMENT_NAME}" != "staging" ]; then
+          echo "::error::Production Landing Zone account provisioning is not currently approved."
+          echo "::error::This composite action is restricted to environment='staging' for the current feature."
+          echo "::error::Refusing to run against environment='${ENVIRONMENT_NAME}'."
+          exit 1
+        fi
+        echo "Environment='${ENVIRONMENT_NAME}' - authorised to continue."
+
+    - name: Generate active Landing Zone account manifest from validated configuration
+      id: manifest
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+
+        MANIFEST_FILE="${RUNNER_TEMP}/landing-zone-accounts-manifest.json"
+        pnpm --silent run list:landing-zone-accounts -- --environment "${ENVIRONMENT_NAME}" > "${MANIFEST_FILE}"
+
+        COUNT=$(jq -r '.count' "${MANIFEST_FILE}")
+        echo "manifest-file=${MANIFEST_FILE}" >> "$GITHUB_OUTPUT"
+        echo "count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+        echo "Active Landing Zone account inventory for '${ENVIRONMENT_NAME}':"
+        jq -r '.accounts[] | "  - " + .key + " (" + .name + ") -> " + .ouPath' "${MANIFEST_FILE}" || true
+
+        if [ "${COUNT}" -eq 0 ]; then
+          echo "::notice::No active Landing Zone accounts are configured for '${ENVIRONMENT_NAME}'. This composite action will exit without deploying."
+        fi
+
+    - name: Resolve OuId* parameters required by the active account configuration
+      id: resolve_ou_ids
+      if: ${{ steps.manifest.outputs.count != '0' }}
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        OU_STACK_NAME: ${{ inputs.ou-stack-name }}
+        MANIFEST_FILE: ${{ steps.manifest.outputs.manifest-file }}
+      run: |
+        set -euo pipefail
+
+        OU_PARAMS_FILE="${RUNNER_TEMP}/lz-accounts-ou-params"
+        : > "${OU_PARAMS_FILE}"
+
+        REQUIRED_PARAMS=$(jq -r '.ouParameterNames[]' "${MANIFEST_FILE}")
+        REQUIRED_COUNT=$(printf '%s\n' "${REQUIRED_PARAMS}" | grep -cvE '^\s*$' || true)
+        echo "Required OU parameters (${REQUIRED_COUNT}):"
+        printf '  - %s\n' ${REQUIRED_PARAMS}
+
+        while IFS= read -r PARAM_NAME; do
+          [ -z "${PARAM_NAME}" ] && continue
+          VALUE=$(aws cloudformation describe-stacks \
+            --stack-name "${OU_STACK_NAME}" \
+            --region "${ESC_REGION}" \
+            --query "Stacks[0].Outputs[?OutputKey=='${PARAM_NAME}'].OutputValue | [0]" \
+            --output text)
+          if [ -z "${VALUE}" ] || [ "${VALUE}" = "None" ]; then
+            echo "::error::${OU_STACK_NAME} does not expose an ${PARAM_NAME} output. Refusing to deploy the Landing Zone accounts stack without a resolved parent OU."
+            exit 1
+          fi
+          if ! printf '%s' "${VALUE}" | grep -qE '^ou-[0-9a-z]{4,32}-[0-9a-z]{8,32}$'; then
+            echo "::error::OU stack output '${PARAM_NAME}' has value '${VALUE}', which is not a valid AWS Organizations OU ID."
+            exit 1
+          fi
+          printf -- '--parameters\n%s=%s\n' "${PARAM_NAME}" "${VALUE}" >> "${OU_PARAMS_FILE}"
+          echo "Resolved ${PARAM_NAME}=${VALUE}"
+        done <<< "${REQUIRED_PARAMS}"
+
+        echo "ou-params-file=${OU_PARAMS_FILE}" >> "$GITHUB_OUTPUT"
+
+    - name: CDK diff (Landing Zone Accounts stack)
+      if: ${{ steps.manifest.outputs.count != '0' }}
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        OU_PARAMS_FILE: ${{ steps.resolve_ou_ids.outputs.ou-params-file }}
+        DIFF_CONTINUE_ON_ERROR: ${{ inputs.diff-continue-on-error }}
+      run: |
+        set +e
+        # xargs feeds the pattern-constrained `--parameters KEY=VALUE` pairs the resolver wrote,
+        # one flag/value per line, without word-splitting hazards.
+        xargs -a "${OU_PARAMS_FILE}" -d '\n' pnpm exec cdk diff "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively
+        rc=$?
+        if [ "${DIFF_CONTINUE_ON_ERROR}" = "true" ] && [ "${rc}" -ne 0 ]; then
+          echo "::warning::cdk diff for ${STACK_ID} exited with ${rc}; continuing because diff-continue-on-error=true (advisory)."
+          exit 0
+        fi
+        exit "${rc}"
+
+    - name: Deploy Landing Zone Accounts stack
+      if: ${{ steps.manifest.outputs.count != '0' }}
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        OU_PARAMS_FILE: ${{ steps.resolve_ou_ids.outputs.ou-params-file }}
+      run: |
+        xargs -a "${OU_PARAMS_FILE}" -d '\n' pnpm exec cdk deploy "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively \
+          --require-approval never \
+          --progress events
+
+    - name: Post-deployment Landing Zone accounts validation
+      id: validate
+      if: ${{ steps.manifest.outputs.count != '0' }}
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        ACCOUNTS_STACK_NAME: ${{ inputs.accounts-stack-name }}
+        MANIFEST_FILE: ${{ steps.manifest.outputs.manifest-file }}
+      run: |
+        set -euo pipefail
+
+        STATUS=$(aws cloudformation describe-stacks \
+          --stack-name "${ACCOUNTS_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query 'Stacks[0].StackStatus' --output text)
+        echo "Stack status: ${STATUS}"
+        case "${STATUS}" in
+          CREATE_COMPLETE|UPDATE_COMPLETE) ;;
+          *) echo "::error::Unexpected stack status '${STATUS}'."; exit 1 ;;
+        esac
+
+        # 1. Only AWS::Organizations::Account resources.
+        UNEXPECTED_TYPES=$(aws cloudformation describe-stack-resources \
+          --stack-name "${ACCOUNTS_STACK_NAME}" --region "${ESC_REGION}" \
+          --query 'StackResources[].ResourceType' --output text \
+          | tr '\t' '\n' | grep -vx 'AWS::Organizations::Account' | grep -v '^$' || true)
+        if [ -n "${UNEXPECTED_TYPES}" ]; then
+          echo "::error::The Landing Zone accounts stack contains unexpected resource types:"
+          printf '  - %s\n' ${UNEXPECTED_TYPES}
+          exit 1
+        fi
+
+        # 2. Expected number of `AccountId*` outputs matches the validated active configuration.
+        EXPECTED_COUNT=$(jq -r '.count' "${MANIFEST_FILE}")
+        mapfile -t ACCOUNT_IDS < <(aws cloudformation describe-stacks \
+          --stack-name "${ACCOUNTS_STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?starts_with(OutputKey, 'AccountId')].OutputValue" \
+          --output text | tr '\t' '\n' | sed '/^$/d')
+        if [ "${#ACCOUNT_IDS[@]}" -ne "${EXPECTED_COUNT}" ]; then
+          echo "::error::Expected ${EXPECTED_COUNT} account outputs but stack reported ${#ACCOUNT_IDS[@]}."
+          exit 1
+        fi
+        for id in "${ACCOUNT_IDS[@]}"; do
+          if ! printf '%s' "${id}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::'${id}' is not a valid 12-digit AWS account ID."
+            exit 1
+          fi
+        done
+
+        # 3. Every expected account name appears exactly once under its declared OU.
+        ACCOUNT_IDS_LIST=""
+        while IFS= read -r ENTRY; do
+          KEY=$(printf '%s' "${ENTRY}" | jq -r '.key')
+          NAME=$(printf '%s' "${ENTRY}" | jq -r '.name')
+          OU_PARAM=$(printf '%s' "${ENTRY}" | jq -r '.ouParameterName')
+          OUTPUT_NAME=$(printf '%s' "${ENTRY}" | jq -r '.outputName')
+
+          OU_ID=$(aws cloudformation describe-stacks \
+            --stack-name "${{ inputs.ou-stack-name }}" \
+            --region "${ESC_REGION}" \
+            --query "Stacks[0].Outputs[?OutputKey=='${OU_PARAM}'].OutputValue | [0]" \
+            --output text)
+
+          NAMES_UNDER_OU=$(aws organizations list-accounts-for-parent \
+            --parent-id "${OU_ID}" \
+            --region "${ESC_REGION}" \
+            --query 'Accounts[].Name' --output text | tr '\t' '\n')
+          OCCURRENCES=$(printf '%s\n' "${NAMES_UNDER_OU}" | grep -cFx "${NAME}" || true)
+          if [ "${OCCURRENCES}" -ne 1 ]; then
+            echo "::error::Account '${NAME}' (${KEY}) appears ${OCCURRENCES} times under OU ${OU_ID} (expected 1)."
+            exit 1
+          fi
+
+          ACCOUNT_ID=$(aws cloudformation describe-stacks \
+            --stack-name "${ACCOUNTS_STACK_NAME}" \
+            --region "${ESC_REGION}" \
+            --query "Stacks[0].Outputs[?OutputKey=='${OUTPUT_NAME}'].OutputValue | [0]" \
+            --output text)
+          if ! printf '%s' "${ACCOUNT_ID}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::Output '${OUTPUT_NAME}' for account '${KEY}' is not a 12-digit AWS account ID (got '${ACCOUNT_ID}')."
+            exit 1
+          fi
+          ACCOUNT_IDS_LIST+="${KEY}=${ACCOUNT_ID}"$'\n'
+          echo "ok  ${KEY} (${NAME}) -> ${ACCOUNT_ID} under ${OU_PARAM}"
+        done < <(jq -c '.accounts[]' "${MANIFEST_FILE}")
+
+        echo "account-count=${EXPECTED_COUNT}" >> "$GITHUB_OUTPUT"
+        {
+          echo "account-ids<<EOF"
+          printf '%s' "${ACCOUNT_IDS_LIST}"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+        echo "Post-deployment Landing Zone accounts validation passed."

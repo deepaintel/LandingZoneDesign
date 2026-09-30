@@ -1,0 +1,57 @@
+name: setup-workspace
+description: >
+  Post-checkout workspace preparation shared by staging-deploy.yml and production-deploy.yml.
+  Wraps the approved ccoe-aws/reusable-workflows setup-node + enable-pnpm actions, runs
+  `pnpm install --frozen-lockfile`, and loads the merged config/default.yaml + config/<env>.yaml
+  through @ccoe-aws_if-it/ccoe-config-reader to expose the validated 12-digit aws.accountId as
+  an output. Governed by `.apm/instructions/landing-zone-ou-governance.instructions.md` §22.
+  Requires the calling workflow to have already invoked `actions/checkout` (a repo-local composite
+  action cannot run before the repository is on the runner). Does NOT configure AWS credentials.
+inputs:
+  environment:
+    description: Target environment (`staging` or `production`). Passed to ccoe-config-reader.
+    required: true
+  read-packages-token:
+    description: >
+      GitHub token with read:packages on the ccoe registry. Threaded to the reusable setup-node
+      composite action so PNPM can install private packages. Never logged by this action.
+    required: true
+outputs:
+  account-id:
+    description: >
+      Validated 12-digit AWS management account ID resolved from
+      config/default.yaml + config/<env>.yaml via ccoe-config-reader.
+    value: ${{ steps.resolve.outputs.account-id }}
+runs:
+  using: composite
+  steps:
+    - name: Setup Node
+      uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+      with:
+        read-packages-token: ${{ inputs.read-packages-token }}
+
+    - name: Enable PNPM
+      uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Resolve identifiers from config
+      id: resolve
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+
+        ACCOUNT_ID=$(pnpm exec ccoe-config-reader "${ENVIRONMENT_NAME}" --configDirName config | jq -r '.aws.accountId')
+
+        if ! printf '%s' "${ACCOUNT_ID}" | grep -qE '^[0-9]{12}$'; then
+          echo "::error::aws.accountId missing or malformed after merging config/default.yaml with config/${ENVIRONMENT_NAME}.yaml (got '${ACCOUNT_ID}')."
+          echo "::error::Populate config/${ENVIRONMENT_NAME}.yaml with the 12-digit management account ID."
+          exit 1
+        fi
+
+        echo "account-id=${ACCOUNT_ID}" >> "$GITHUB_OUTPUT"
+        echo "Resolved ${ENVIRONMENT_NAME} account: ${ACCOUNT_ID}"

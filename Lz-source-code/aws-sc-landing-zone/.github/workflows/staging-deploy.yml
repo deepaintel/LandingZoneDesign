@@ -1,0 +1,381 @@
+# =============================================================================================
+# Staging deployment - owned by aws-sc-landing-zone.
+#
+# Deployment source: protected release/* branches ONLY.
+#   * Initial controlled creation of a release/* branch fires this workflow (GitHub emits a
+#     `push` event with `created: true` when a branch is created), producing the first Staging
+#     deployment. No separate `create` trigger is required.
+#   * An approved backport/* -> release/* PR merge is a push to release/* and therefore triggers
+#     Staging redeployment.
+#
+# main, feature/*, hotfix/* and backport/* never deploy.
+#
+# Authentication: GitHub OIDC -> foundation-managed custom deployment role -> CDK bootstrap
+# roles -> CloudFormation, through the approved credentials composite action. This workflow
+# never bootstraps, never uses long-lived credentials, and never recreates foundation-owned
+# OIDC / bootstrap / deployment-role resources.
+#
+# Configuration sources at deploy time:
+#   * config/staging.yaml (this repo)     - landing-zone architecture + aws.accountId,
+#     resolved through @ccoe-aws_if-it/ccoe-config-reader used as a generic loader library
+#     inside the reusable ./.github/actions/setup-workspace composite action.
+#   * .github/actions/prepare-organization - idempotently detects-or-creates the AWS Organization
+#     and emits the Root ID as a step output.
+#
+# Scope in this phase: AWS Organizations OUs, SCP/RCP policy code, IAM Identity Center Permission
+# Sets, and the SCIM synchronization state machine stack. The OU and policy stacks are decoupled at
+# the CloudFormation layer; ordering is preserved here by workflow-level invocation order. The
+# reusable local composite actions (setup-workspace, validate-release, deploy-ou-structure,
+# deploy-organization-policies, deploy-shared-accounts, initialize-control-tower) implement the
+# per-topic mechanics. The SCIM synchronization stack is deployed inline after Identity Center.
+# Identity Center instance and identity-store identifiers are handled by its composite action;
+# Entra SCIM provisioning and JIT lifecycle management remain Foundation- and Entra-owned external
+# dependencies.
+#
+# Required secrets:
+#   READ_PACKAGES    - org- or repo-scoped GitHub token with read:packages on the ccoe registry.
+#
+# No GitHub Environment variables are consumed for AWS identifiers. Account ID lives in
+# config/staging.yaml. Root ID and IAM Identity Center identifiers are resolved at runtime.
+# =============================================================================================
+name: staging-deploy
+
+on:
+  push:
+    branches:
+      - 'release/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: staging-deploy
+  cancel-in-progress: false
+
+env:
+  # Consumed by the approved ccoe-aws/reusable-workflows composite actions.
+  ESC_PARTITION: eusc
+  ESC_REGION: eusc-de-east-1
+  # Name of the foundation-managed custom deployment role. aws-sc-foundation's identity-provider
+  # stack currently deploys this role as `github-actions-role`. The reusable-workflows
+  # `aws-credentials` composite action defaults to `github-action-deploy-role`, so we override
+  # explicitly rather than rely on the default.
+  DEPLOYMENT_ROLE_NAME: github-actions-role
+  OU_STRUCTURE_STACK_ID: OuStructureStack
+  IDENTITY_CENTER_PERMISSION_SETS_STACK_ID: IdentityCenterPermissionSetsStack
+  SCIM_SYNC_STACK_ID: ScimSyncStack
+  SCIM_CLEANUP_STACK_ID: ScimCleanupStack
+  ORGANIZATION_POLICY_STACK_ID: OrganizationPolicyStack
+  # Shared Control Tower onboarding accounts (Audit / Log Archive) under the existing Security
+  # OU. Deployed after the OU and policy stacks, isolated at the CloudFormation layer through the
+  # OuIdSecurity CloudFormation parameter (same pattern as OrganizationRootId / OuId*).
+  SHARED_ACCOUNTS_STACK_ID: SharedAccountsStack
+  # Control Tower management-account prerequisite roles (AWSControlTowerAdmin,
+  # AWSControlTowerCloudTrailRole, AWSControlTowerStackSetRole) required by the
+  # CreateLandingZone API path. See .apm/instructions/control-tower-initialization.instructions.md
+  # §11.1.
+  CONTROL_TOWER_ROLES_STACK_ID: ControlTowerRolesStack
+  # Landing Zone platform + CCoE validation accounts (SecurityTooling, SharedServices, Network,
+  # and the CCoE-* validation accounts). Governed by
+  # .apm/instructions/landing-zone-account-provisioning.instructions.md and
+  # .apm/skills/generate-account/SKILL.md. Staging-only in the current phase:
+  # bin/landing-zone.ts gates the stack instantiation to environment=staging and the
+  # deploy-landing-zone-accounts composite action fails fast for any other environment.
+  LANDING_ZONE_ACCOUNTS_STACK_ID: LandingZoneAccountsStack
+
+jobs:
+  # -------------------------------------------------------------------------------------------
+  # Revalidate the release candidate WITHOUT any AWS credentials.
+  # -------------------------------------------------------------------------------------------
+  validate:
+    name: Validate release candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          environment: staging
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Validate release candidate
+        uses: ./.github/actions/validate-release
+        with:
+          environment: staging
+
+  # -------------------------------------------------------------------------------------------
+  # Deploy. This is the ONLY job permitted to request AWS deployment credentials.
+  # -------------------------------------------------------------------------------------------
+  deploy-staging:
+    name: Deploy OU, Identity Center, SCIM, and organization policy stacks to Staging
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    steps:
+      - name: Confirm the deployment source is a protected release branch
+        run: |
+          set -euo pipefail
+          case "${GITHUB_REF}" in
+            refs/heads/release/*)
+              echo "Deployment source: ${GITHUB_REF} (commit ${GITHUB_SHA})"
+              ;;
+            *)
+              echo "::error::Only protected release/* branches may deploy. Refusing '${GITHUB_REF}'."
+              exit 1
+              ;;
+          esac
+
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        id: workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          environment: staging
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      # Approved ccoe-aws/reusable-workflows composite action. It derives the deployment role
+      # ARN and OIDC audience from the partition, account ID and role name, and configures the
+      # ESC STS endpoint (sts.eusc-de-east-1.amazonaws.eu) automatically.
+      - name: Configure AWS ESC credentials with OIDC
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: oidc
+          aws-partition: ${{ env.ESC_PARTITION }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          aws-session-name: lz-staging-ou-${{ github.run_id }}
+
+      # Idempotent detect-or-create for the AWS Organization. Emits organization-id and
+      # organization-root-id as step outputs and, with ensure-scp-policy-type: 'true' and
+      # ensure-rcp-policy-type: 'true', confirms that SERVICE_CONTROL_POLICY and
+      # RESOURCE_CONTROL_POLICY are both enabled on the Root before the policy stack deploys.
+      # AWS Organizations does NOT auto-enable any policy type when the Organization is created
+      # with --feature-set ALL; each type must be enabled explicitly. Also asserts
+      # sts:GetCallerIdentity matches the expected account before touching Organizations.
+      - name: Prepare AWS Organization
+        id: prepare_org
+        uses: ./.github/actions/prepare-organization
+        with:
+          expected-account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          ensure-scp-policy-type: 'true'
+          ensure-rcp-policy-type: 'true'
+
+      # Deploys ONLY the OU Structure stack. No `--all`. No bootstrap. `cdk diff` is advisory in
+      # Staging (diff-continue-on-error: 'true') to preserve the pre-refactor behaviour.
+      - name: Deploy OU Structure stack
+        uses: ./.github/actions/deploy-ou-structure
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-root-id: ${{ steps.prepare_org.outputs.organization-root-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.OU_STRUCTURE_STACK_ID }}
+          diff-continue-on-error: 'true'
+
+      - name: Deploy IAM Identity Center
+        id: identity_center
+        uses: ./.github/actions/deploy-identity-center
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          permission-sets-stack-id: ${{ env.IDENTITY_CENTER_PERMISSION_SETS_STACK_ID }}
+
+      # -----------------------------------------------------------------------------------------
+      # SCIM synchronization state machine stack. Deploys the Step Functions / Lambda pipeline
+      # that reconciles Entra ID SCIM group state against IAM Identity Center account assignments.
+      # `cdk diff` is advisory in Staging (diff-continue-on-error: 'true'). Post-deployment
+      # validation confirms stack status and expected Lambda / StateMachine / EventsRule counts.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy SCIM synchronization stack
+        uses: ./.github/actions/deploy-scim-sync
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.SCIM_SYNC_STACK_ID }}
+          diff-continue-on-error: 'true'
+
+      # -----------------------------------------------------------------------------------------
+      # SCIM cleanup state machine stack. Deploys the Step Functions / Lambda pipeline that removes
+      # IAM Identity Center users with no remaining group memberships. `cdk diff` is advisory in
+      # Staging (diff-continue-on-error: 'true'). Post-deployment validation confirms stack status
+      # and expected Lambda / StateMachine / EventsRule counts.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy SCIM cleanup stack
+        uses: ./.github/actions/deploy-scim-cleanup
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.SCIM_CLEANUP_STACK_ID }}
+          diff-continue-on-error: 'true'
+
+      # -----------------------------------------------------------------------------------------
+      # Organization Policy stack. Deliberately ISOLATED from the OU stack at the CloudFormation
+      # layer: no Fn::Export / Fn::ImportValue link between the two stacks, and no CDK-level
+      # addDependency in bin/landing-zone.ts. Ordering is enforced by this workflow (the OU stack
+      # deploy above completed before this section runs), and the OU IDs the policy stack needs
+      # are resolved inside the composite action from the OU stack's OuId* outputs and passed as
+      # pattern-constrained CloudFormation parameters. `cdk diff` remains advisory in Staging.
+      #
+      # Neither Root ID, Organization ID nor any OU ID is stored in source config.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy Organization Policy stack
+        uses: ./.github/actions/deploy-organization-policies
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-root-id: ${{ steps.prepare_org.outputs.organization-root-id }}
+          organization-id: ${{ steps.prepare_org.outputs.organization-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.ORGANIZATION_POLICY_STACK_ID }}
+          diff-continue-on-error: 'true'
+
+      # -----------------------------------------------------------------------------------------
+      # Shared Control Tower onboarding accounts (Audit / Log Archive). Isolated from the OU
+      # stack exactly like the policy stack: the Security OU ID enters as a pattern-constrained
+      # CFN parameter (OuIdSecurity), resolved from the OU stack's matching output through
+      # describe-stacks inside the composite action. No CloudFormation Export / ImportValue,
+      # no CDK-level addDependency, so this stack can be updated, replaced or torn down
+      # independently of the OU / policy stacks. Ordering is enforced by this workflow.
+      #
+      # Governed by `.apm/instructions/shared-account-provisioning.instructions.md` and
+      # `.apm/skills/generate-account/SKILL.md`. Only Staging is deployed in this iteration;
+      # the Production workflow synthesizes/validates the same stack but does NOT deploy it.
+      # `cdk diff` remains advisory in Staging.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy Shared Accounts stack
+        id: shared_accounts
+        uses: ./.github/actions/deploy-shared-accounts
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.SHARED_ACCOUNTS_STACK_ID }}
+          diff-continue-on-error: 'true'
+
+      # -----------------------------------------------------------------------------------------
+      # Control Tower management-account prerequisite roles required by the CreateLandingZone
+      # API path (`AWSControlTowerAdmin`, `AWSControlTowerCloudTrailRole`,
+      # `AWSControlTowerStackSetRole`). AWS Console setup auto-creates these; the API setup
+      # this repository uses does not. This step is the approved exception to the general
+      # "do not pre-create Control Tower roles" rule, per
+      # `.apm/instructions/control-tower-initialization.instructions.md` §11.1. The role
+      # exists in the management account only and does not touch member accounts.
+      #
+      # Runs before Control Tower initialisation; a missing role is what previously produced
+      # the "could not assume the AWSControlTowerAdmin role" ValidationException on
+      # CreateLandingZone. `cdk diff` remains advisory in Staging.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy Control Tower prerequisite roles stack
+        uses: ./.github/actions/deploy-control-tower-roles
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.CONTROL_TOWER_ROLES_STACK_ID }}
+          diff-continue-on-error: 'true'
+
+      # -----------------------------------------------------------------------------------------
+      # AWS Control Tower Landing Zone 4.0 initialisation. Runs INSIDE the standard release-branch
+      # Staging deploy so it participates in the same promotion flow as every other stack. The
+      # reusable composite action encapsulates the check-existing/preinit/initialize/poll/postinit
+      # sequence and makes it idempotent via `controltower:ListLandingZones`: CreateLandingZone is
+      # invoked at most once per Staging environment. Subsequent release-branch deployments detect
+      # the existing Landing Zone and run only the read-only post-init validator.
+      #
+      # Both Staging and Production invoke the SAME composite action per
+      # `.apm/instructions/control-tower-initialization.instructions.md` §23.
+      # Shared-account IDs are the runtime `AccountIdAudit` / `AccountIdLogArchive` outputs from
+      # the deploy-shared-accounts action above (Path A) - never sourced from configuration YAML,
+      # never persisted, never resolved via Fn::ImportValue or CDK cross-stack reference.
+      # -----------------------------------------------------------------------------------------
+      - name: Initialise AWS Control Tower Landing Zone 4.0
+        id: control_tower
+        uses: ./.github/actions/initialize-control-tower
+        with:
+          environment: staging
+          audit-account-id: ${{ steps.shared_accounts.outputs.audit-account-id }}
+          log-archive-account-id: ${{ steps.shared_accounts.outputs.log-archive-account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+
+      # -----------------------------------------------------------------------------------------
+      # Landing Zone platform + CCoE validation accounts (SecurityTooling, SharedServices,
+      # Network, and the CCoE-* validation accounts). Governed by
+      # `.apm/instructions/landing-zone-account-provisioning.instructions.md` §17: deployed AFTER
+      # Control Tower initialization has succeeded so the remaining accounts inherit the stable
+      # Control Tower foundation.
+      #
+      # Isolated from every other stack exactly like the shared-accounts and policy stacks: the
+      # composite action derives the required `OuId*` parameters from validated configuration,
+      # resolves them from the OU stack's outputs via `describe-stacks`, and passes them as
+      # pattern-constrained CloudFormation `--parameters`. No CloudFormation Export/ImportValue,
+      # no CDK cross-stack reference. Account inventory comes from `config/staging.yaml`
+      # (`landingZoneAccounts:`); the workflow does NOT carry a duplicate inventory list.
+      #
+      # Staging-only for the current feature: `bin/landing-zone.ts` only instantiates the stack
+      # when environment=staging, and the composite action fails fast for any other environment.
+      # `cdk diff` remains advisory in Staging (diff-continue-on-error: 'true'), consistent with
+      # every other Staging deploy step.
+      # -----------------------------------------------------------------------------------------
+      - name: Deploy Landing Zone accounts
+        id: landing_zone_accounts
+        uses: ./.github/actions/deploy-landing-zone-accounts
+        with:
+          environment: staging
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          stack-id: ${{ env.LANDING_ZONE_ACCOUNTS_STACK_ID }}
+          diff-continue-on-error: 'true'
+
+      - name: Summary
+        if: ${{ always() }}
+        run: |
+          {
+            echo "### Staging deployment"
+            echo ""
+            echo "- Source branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Configuration: \`config/staging.yaml\`"
+            echo "- Region: \`${ESC_REGION}\`"
+            echo "- Stacks deployed: \`${OU_STRUCTURE_STACK_ID}\`, \`${IDENTITY_CENTER_PERMISSION_SETS_STACK_ID}\`, \`${SCIM_SYNC_STACK_ID}\`, \`${SCIM_CLEANUP_STACK_ID}\`, \`${ORGANIZATION_POLICY_STACK_ID}\`, \`${SHARED_ACCOUNTS_STACK_ID}\`, \`${CONTROL_TOWER_ROLES_STACK_ID}\`, \`${LANDING_ZONE_ACCOUNTS_STACK_ID}\` (OU/policy/shared-accounts/control-tower-roles/landing-zone-accounts stacks deployed independently; no CloudFormation Export / Fn::ImportValue between them)"
+            echo "- Expected OUs: 14"
+            echo "- IAM Identity Center instance: ${{ steps.identity_center.outputs.instance-arn }}"
+            echo "- IAM Identity Center runtime reconciliation: see job result (10 Permission Sets, zero assignments expected)"
+            echo "- OU IDs threaded to policy stack: 14 (as \`OuId*\` CloudFormation parameters)"
+            echo "- Security OU ID threaded to shared-accounts stack: \`OuIdSecurity\` CloudFormation parameter"
+            echo "- SCP policy-type status: \`${{ steps.prepare_org.outputs.service-control-policy-status }}\`"
+            echo "- RCP policy-type status: \`${{ steps.prepare_org.outputs.resource-control-policy-status }}\`"
+            echo "- Deployment hold: none (config/default.yaml governance.disabledPolicies is empty)"
+            echo "- Account-level attachments: none (deferred)"
+            echo "- Shared accounts created / verified: 2 (Log Archive, Audit) under Security OU, DeletionPolicy: Retain"
+            echo "- Staging Log Archive account ID: \`${{ steps.shared_accounts.outputs.log-archive-account-id }}\`"
+            echo "- Staging Audit account ID: \`${{ steps.shared_accounts.outputs.audit-account-id }}\`"
+            echo "- Account IDs persisted to source: no (Path A - resolved at runtime from lz-shared-accounts stack outputs)"
+            echo "- Control Tower Landing Zone version: \`4.0\` (--landing-zone-version 4.0)"
+            echo "- Control Tower pre-existing Landing Zone detected: \`${{ steps.control_tower.outputs.landing-zone-exists }}\`"
+            echo "- Control Tower Landing Zone ARN: \`${{ steps.control_tower.outputs.landing-zone-arn }}\`"
+            echo "- Control Tower CreateLandingZone invoked this run: \`${{ steps.control_tower.outputs.operation-identifier != '' }}\`"
+            echo "- Control Tower operation identifier (this run): \`${{ steps.control_tower.outputs.operation-identifier }}\`"
+            echo "- Landing Zone accounts deployed / verified: \`${{ steps.landing_zone_accounts.outputs.account-count }}\` (from validated Staging configuration; inventory not duplicated in workflow YAML)"
+            echo "- Landing Zone account IDs (this run):"
+            printf '%s\n' \"${{ steps.landing_zone_accounts.outputs.account-ids }}\" | sed 's/^/  - /'
+            echo "- CCoE-Hybrid-NonProd-01: EXCLUDED (workbook Account Email Hydrid/Hybrid discrepancy remains unresolved per .apm/instructions/landing-zone-account-provisioning.instructions.md §3.4)"
+            echo "- Landing Zone account tags: 8 P1 tags applied at creation via AWS::Organizations::Account.Tags (owner, owner-email, environment, lifecycle, data-classification, data-residency=EU, itsystemcode, domain=Cloud Application Platform)"
+            echo "- Bootstrap executed: no"
+            echo "- Long-lived credentials used: no (GitHub OIDC only)"
+          } >> "$GITHUB_STEP_SUMMARY"

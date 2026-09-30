@@ -1,0 +1,80 @@
+# ---------------------------------------------------------------------------------------------
+# Production AWS Organization - STRUCTURAL READINESS ONLY for the OU implementation phase.
+#
+# Production deployment MUST NOT be executed during this phase. production-deploy.yml exists for
+# repository readiness, is manual (workflow_dispatch) only, and is additionally gated behind the
+# PRODUCTION_DEPLOYMENT_ENABLED GitHub Environment variable.
+#
+# The Staging AWS Organization mirrors the Production OU hierarchy, so the OU list below is
+# identical to config/staging.yaml by design. Only the target stack name and environment differ.
+#
+# Loading: this file is loaded via @ccoe-aws_if-it/ccoe-config-reader used as a generic YAML
+# loader library by ConfigReader with LandingZoneSchema.
+#
+# The AWS Organizations Root is NEVER created by CDK application code. Its lifecycle is handled
+# by the prepare-organization composite action (.github/actions/prepare-organization) at deploy
+# time: idempotent detect-or-create, Root ID emitted as a step output and fed to `cdk deploy`
+# via the OrganizationRootId CloudFormation parameter. No Root ID is stored in this file.
+#
+# aws.accountId is the Production AWS Organizations management account ID. Its presence here
+# does NOT authorise Production execution. Real gating for Production execution lives in the
+# PRODUCTION_DEPLOYMENT_ENABLED GitHub Environment variable on production-deploy.yml, which
+# must be explicitly set to 'true' before any Production run is allowed to proceed.
+# ---------------------------------------------------------------------------------------------
+aws:
+  # Production AWS Organizations management account (aws-cloud-org-001).
+  accountId: '118669550283'
+
+identityCenter:
+  instanceName: aws-esc-landing-zone-production
+
+# Shared-account per-environment overrides for Production. Names / OU / owner / costCentre /
+# operationsContact come from config/default.yaml. Present here for repository readiness ONLY -
+# Production shared-account creation is NOT part of this deployment activity per
+# `.apm/instructions/shared-account-provisioning.instructions.md` §14. The Production deployment
+# workflow does not deploy the shared-accounts stack in this iteration; it only synthesizes and
+# validates it. No Production account IDs live in configuration; AWS generates them when the
+# Production deployment is separately approved and executed.
+accounts:
+  logArchive:
+    email: 'FMITaws-cloud-org-001+LogArchive@if.se'
+    securityContact: 'Cloud-Security@if.eu'
+  audit:
+    email: 'FMITaws-cloud-org-001+Audit@if.se'
+    securityContact: 'Cloud-Security@if.eu'
+
+# ---------------------------------------------------------------------------------------------
+# Control Tower Landing Zone 4.0 - Production retention overrides.
+#
+# CODE/CONFIGURATION-READY ONLY. Production execution remains gated behind the protected
+# `production` GitHub Environment approval on production-deploy.yml. This block establishes the
+# approved Production retention values so the manifest is generated correctly when Production is
+# separately authorized.
+#
+# Retention is set explicitly on BOTH integrations (centralizedLogging AND config) because
+# LZ 4.0 uses dedicated resources for CloudTrail-centered centralized logging and for AWS
+# Config. Retention on one does not imply retention on the other.
+#
+# `kmsKeyArn` is DELIBERATELY OMITTED from both `centralizedLogging.configurations` and
+# `config.configurations`. AWS Control Tower applies its standard/default encryption
+# configuration when omitted.
+#
+# Production retention values:
+#   centralizedLogging.configurations.loggingBucket.retentionDays        : 1825
+#   centralizedLogging.configurations.accessLoggingBucket.retentionDays  : 1825
+#   config.configurations.loggingBucket.retentionDays                    : 1825
+#   config.configurations.accessLoggingBucket.retentionDays              : 1825
+# ---------------------------------------------------------------------------------------------
+controlTower:
+  centralizedLogging:
+    configurations:
+      loggingBucket:
+        retentionDays: 1825
+      accessLoggingBucket:
+        retentionDays: 1825
+  config:
+    configurations:
+      loggingBucket:
+        retentionDays: 1825
+      accessLoggingBucket:
+        retentionDays: 1825

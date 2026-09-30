@@ -1,0 +1,98 @@
+name: resolve-shared-accounts
+description: >
+  Read-only Path A resolver for the shared Audit and Log Archive account IDs from the deployed
+  `lz-shared-accounts` CloudFormation stack. When the stack is present in the target
+  account/region, resolves and validates `AccountIdAudit` and `AccountIdLogArchive` as 12-digit
+  AWS account IDs (and that they differ), then exposes both as action outputs. When the stack is
+  absent, reports `exists=false` and never attempts any mutation. Used by production-deploy.yml
+  to gate the Control Tower initialization step while Production shared-account creation remains
+  deferred per `.apm/instructions/shared-account-provisioning.instructions.md` §14; also usable
+  from any workflow that needs Path A IDs without redeploying the shared-accounts stack.
+  Governed by `.apm/instructions/shared-account-provisioning.instructions.md` §18.
+  Requires AWS credentials to be configured before this action runs (typically via the reusable
+  `aws-credentials` composite action). Does NOT create or modify any AWS resource.
+inputs:
+  aws-region:
+    description: AWS region for CloudFormation API calls.
+    required: false
+    default: eusc-de-east-1
+  stack-name:
+    description: CloudFormation stack name of the shared-accounts stack.
+    required: false
+    default: lz-shared-accounts
+outputs:
+  exists:
+    description: >
+      `"true"` when the shared-accounts stack is deployed and in `CREATE_COMPLETE` /
+      `UPDATE_COMPLETE`, otherwise `"false"`.
+    value: ${{ steps.check.outputs.exists }}
+  audit-account-id:
+    description: >
+      12-digit `AccountIdAudit` value resolved from the shared-accounts stack outputs. Empty when
+      the stack is absent.
+    value: ${{ steps.resolve.outputs.audit-account-id }}
+  log-archive-account-id:
+    description: >
+      12-digit `AccountIdLogArchive` value resolved from the shared-accounts stack outputs. Empty
+      when the stack is absent.
+    value: ${{ steps.resolve.outputs.log-archive-account-id }}
+runs:
+  using: composite
+  steps:
+    - name: Check whether the shared-accounts stack is deployed
+      id: check
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        STACK_NAME: ${{ inputs.stack-name }}
+      run: |
+        set -euo pipefail
+        STATUS=$(aws cloudformation describe-stacks \
+          --stack-name "${STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query 'Stacks[0].StackStatus' \
+          --output text 2>/dev/null || echo "NOT_FOUND")
+        if [ "${STATUS}" = "CREATE_COMPLETE" ] || [ "${STATUS}" = "UPDATE_COMPLETE" ]; then
+          echo "exists=true" >> "$GITHUB_OUTPUT"
+          echo "${STACK_NAME} is deployed (${STATUS}). Path A shared-account resolution will proceed."
+        else
+          echo "exists=false" >> "$GITHUB_OUTPUT"
+          echo "${STACK_NAME} stack is not present (state: ${STATUS})."
+          echo "Downstream steps that depend on Path A shared-account IDs must be gated on the 'exists' output."
+        fi
+
+    - name: Resolve Audit and Log Archive account IDs (Path A, skipped if stack absent)
+      id: resolve
+      if: ${{ steps.check.outputs.exists == 'true' }}
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        STACK_NAME: ${{ inputs.stack-name }}
+      run: |
+        set -euo pipefail
+        AUDIT=$(aws cloudformation describe-stacks \
+          --stack-name "${STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='AccountIdAudit'].OutputValue | [0]" \
+          --output text)
+        LOG_ARCHIVE=$(aws cloudformation describe-stacks \
+          --stack-name "${STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='AccountIdLogArchive'].OutputValue | [0]" \
+          --output text)
+
+        for value in "${AUDIT}" "${LOG_ARCHIVE}"; do
+          if ! printf '%s' "${value}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::Resolved shared-account ID '${value}' is not a 12-digit AWS account ID."
+            exit 1
+          fi
+        done
+
+        if [ "${AUDIT}" = "${LOG_ARCHIVE}" ]; then
+          echo "::error::Audit and Log Archive account IDs must differ."
+          exit 1
+        fi
+
+        echo "audit-account-id=${AUDIT}" >> "$GITHUB_OUTPUT"
+        echo "log-archive-account-id=${LOG_ARCHIVE}" >> "$GITHUB_OUTPUT"
+        echo "Resolved Audit=${AUDIT} LogArchive=${LOG_ARCHIVE}"

@@ -1,0 +1,138 @@
+name: deploy-control-tower-roles
+description: >
+  Deploy the `lz-control-tower-roles` CDK stack (`ControlTowerRolesStack`), which provisions the
+  three management-account IAM roles the AWS Control Tower Landing Zone 4.0 `CreateLandingZone`
+  API requires to exist BEFORE initialization: `AWSControlTowerAdmin`,
+  `AWSControlTowerCloudTrailRole`, and `AWSControlTowerStackSetRole`.
+
+  The Console-based Control Tower setup auto-creates these roles; the API-based flow this
+  repository uses does not. Governed by
+  `.apm/instructions/control-tower-initialization.instructions.md` §11.1, which describes the
+  APPROVED EXCEPTION to the general "do not pre-create Control Tower roles" rule. That rule
+  continues to apply to MEMBER-account roles such as `AWSControlTowerExecution` (created by
+  Control Tower itself during `CreateLandingZone`).
+
+  Idempotent: subsequent deployments only reapply the CloudFormation template. Reused by
+  staging-deploy.yml (and later production-deploy.yml when Production Control Tower
+  initialization is separately approved). Requires AWS credentials to be configured before this
+  action runs (typically via the reusable `aws-credentials` composite action). Does NOT touch
+  member accounts.
+
+inputs:
+  environment:
+    description: Target environment (`staging` or `production`). Passed to `cdk` via `-c environment=...`.
+    required: true
+  account-id:
+    description: 12-digit AWS management account ID the CDK stack deploys into. Sets `CDK_DEFAULT_ACCOUNT`.
+    required: true
+  aws-region:
+    description: AWS region for CloudFormation API calls.
+    required: false
+    default: eusc-de-east-1
+  stack-id:
+    description: CDK construct ID of the Control Tower roles stack.
+    required: false
+    default: ControlTowerRolesStack
+  stack-name:
+    description: CloudFormation stack name of the Control Tower roles stack.
+    required: false
+    default: lz-control-tower-roles
+  diff-continue-on-error:
+    description: >
+      When `'true'`, a non-zero `cdk diff` exit code does not fail the step. Matches the
+      advisory-diff behaviour used by the other Staging deploy actions.
+    required: false
+    default: 'false'
+
+outputs:
+  admin-role-arn:
+    description: ARN of the AWSControlTowerAdmin role.
+    value: ${{ steps.resolve_arns.outputs.admin-role-arn }}
+  cloudtrail-role-arn:
+    description: ARN of the AWSControlTowerCloudTrailRole role.
+    value: ${{ steps.resolve_arns.outputs.cloudtrail-role-arn }}
+  stackset-role-arn:
+    description: ARN of the AWSControlTowerStackSetRole role.
+    value: ${{ steps.resolve_arns.outputs.stackset-role-arn }}
+
+runs:
+  using: composite
+  steps:
+    - name: CDK diff (Control Tower Roles stack)
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+        DIFF_CONTINUE_ON_ERROR: ${{ inputs.diff-continue-on-error }}
+      run: |
+        set +e
+        pnpm exec cdk diff "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively
+        rc=$?
+        if [ "${DIFF_CONTINUE_ON_ERROR}" = "true" ] && [ "${rc}" -ne 0 ]; then
+          echo "::warning::cdk diff for ${STACK_ID} exited with ${rc}; continuing because diff-continue-on-error=true (advisory)."
+          exit 0
+        fi
+        exit "${rc}"
+
+    - name: Deploy Control Tower Roles stack
+      shell: bash
+      env:
+        CDK_DEFAULT_ACCOUNT: ${{ inputs.account-id }}
+        CDK_DEFAULT_REGION: ${{ inputs.aws-region }}
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        STACK_ID: ${{ inputs.stack-id }}
+      run: |
+        pnpm exec cdk deploy "${STACK_ID}" \
+          -c environment="${ENVIRONMENT_NAME}" \
+          --exclusively \
+          --require-approval never \
+          --progress events
+
+    - name: Resolve Control Tower role ARNs
+      id: resolve_arns
+      shell: bash
+      env:
+        ESC_REGION: ${{ inputs.aws-region }}
+        STACK_NAME: ${{ inputs.stack-name }}
+      run: |
+        set -euo pipefail
+
+        ADMIN_ARN=$(aws cloudformation describe-stacks \
+          --stack-name "${STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='ControlTowerAdminRoleArn'].OutputValue | [0]" \
+          --output text)
+        CLOUDTRAIL_ARN=$(aws cloudformation describe-stacks \
+          --stack-name "${STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='ControlTowerCloudTrailRoleArn'].OutputValue | [0]" \
+          --output text)
+        STACKSET_ARN=$(aws cloudformation describe-stacks \
+          --stack-name "${STACK_NAME}" \
+          --region "${ESC_REGION}" \
+          --query "Stacks[0].Outputs[?OutputKey=='ControlTowerStackSetRoleArn'].OutputValue | [0]" \
+          --output text)
+
+        for pair in "AWSControlTowerAdmin=${ADMIN_ARN}" \
+                    "AWSControlTowerCloudTrailRole=${CLOUDTRAIL_ARN}" \
+                    "AWSControlTowerStackSetRole=${STACKSET_ARN}"; do
+          name="${pair%%=*}"
+          value="${pair#*=}"
+          if [ -z "${value}" ] || [ "${value}" = "None" ]; then
+            echo "::error::${STACK_NAME} did not expose the expected output for ${name}."
+            exit 1
+          fi
+        done
+
+        echo "admin-role-arn=${ADMIN_ARN}" >> "$GITHUB_OUTPUT"
+        echo "cloudtrail-role-arn=${CLOUDTRAIL_ARN}" >> "$GITHUB_OUTPUT"
+        echo "stackset-role-arn=${STACKSET_ARN}" >> "$GITHUB_OUTPUT"
+
+        echo "Resolved Control Tower prerequisite role ARNs:"
+        echo "  AWSControlTowerAdmin:          ${ADMIN_ARN}"
+        echo "  AWSControlTowerCloudTrailRole: ${CLOUDTRAIL_ARN}"
+        echo "  AWSControlTowerStackSetRole:   ${STACKSET_ARN}"

@@ -1,0 +1,511 @@
+lockfile_version: '1'
+generated_at: '2026-09-17T10:58:40.348125+00:00'
+dependencies: []
+deployments:
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-account
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-account/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:6c6a6b0ca7f6bf8e34d72c4844f6f5f7369d52f2aa6f2ec6cfb91675b37d112a
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-identity-center
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-identity-center/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:f650a39a6494168adf0019c9850d1f4519436044b6081f76b8601442df0c2f63
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-ou
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-ou/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:8a2d4d11ce592b9a14a2067f38800e43e87087cc8b9f721a388e619fcb438833
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-scp
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-scp/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:21863f48f0c67d670bed8bfdbcb3374aeede45fd8727aabc7993278295dee77e
+- kind: project-relative
+  target: agents
+  value: .agents/skills/initialize-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/initialize-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:2e79f5f20bf4273c427161ab4a709dae2136906ae6c766047028dc89035e9bbe
+- kind: project-relative
+  target: agents
+  value: .agents/skills/update-scp-for-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/update-scp-for-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:be95bec83e33e9b947e00a808f7582e34ab10b71eef6989eeab2faf903e3747a
+- kind: project-relative
+  target: claude
+  value: .claude/rules/apm-authoring-convention.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:3ed005e30fc16130978f1394c8f721ef56f6750b6e8266c9c19cfcfe4543a025
+- kind: project-relative
+  target: claude
+  value: .claude/rules/aws-lambda-implementation.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:5a59adeb900d4e18ead43f6111b495e47e9d2481e27220ede9f93d1ca36a92d5
+- kind: project-relative
+  target: claude
+  value: .claude/rules/control-tower-initialization.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:38b53838bc97ad6fdd3fe64e03e9d50b25893c4ccf00c57a31f00037c7484a26
+- kind: project-relative
+  target: claude
+  value: .claude/rules/control-tower-scp-compatibility.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:73184bfcd1510b12ec05eb6fb3c62d9b0a05383a471bec5db00830508871c8ca
+- kind: project-relative
+  target: claude
+  value: .claude/rules/landing-zone-account-provisioning.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:c2a7cdefb26e7708b1fd1951962c6fc3c4146b3d978337b5386c5282c7cebdc3
+- kind: project-relative
+  target: claude
+  value: .claude/rules/landing-zone-cloudformation-governance.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:d852a4820e137c1806b4d54a1c2beca523e1c4e49eb3319ee6ea2dd680f14ba9
+- kind: project-relative
+  target: claude
+  value: .claude/rules/landing-zone-identity-center-governance.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:639ac348a478511d09871a5585b441cb98debdcbdd6b38655600a35c98ef120f
+- kind: project-relative
+  target: claude
+  value: .claude/rules/landing-zone-ou-governance.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:43babc17258fd4b83b4a179c5f78795f0352282b39f8c85d7852b6f50bf33793
+- kind: project-relative
+  target: claude
+  value: .claude/rules/landing-zone-scp-governance.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:33ad8bf5096c6fe0bbcfe67ac6a8bfba943ef6e6a06092605d1d3e6bf98bf5e4
+- kind: project-relative
+  target: claude
+  value: .claude/rules/shared-account-provisioning.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:d72d7dede1103de80f462bf6aee4f2668f3e9c7b12845e86b305bb2208f81dcf
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-account
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-account/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:6c6a6b0ca7f6bf8e34d72c4844f6f5f7369d52f2aa6f2ec6cfb91675b37d112a
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-identity-center
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-identity-center/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:f650a39a6494168adf0019c9850d1f4519436044b6081f76b8601442df0c2f63
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-ou
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-ou/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:8a2d4d11ce592b9a14a2067f38800e43e87087cc8b9f721a388e619fcb438833
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-scp
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-scp/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:21863f48f0c67d670bed8bfdbcb3374aeede45fd8727aabc7993278295dee77e
+- kind: project-relative
+  target: claude
+  value: .claude/skills/initialize-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/initialize-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:2e79f5f20bf4273c427161ab4a709dae2136906ae6c766047028dc89035e9bbe
+- kind: project-relative
+  target: claude
+  value: .claude/skills/update-scp-for-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/update-scp-for-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:be95bec83e33e9b947e00a808f7582e34ab10b71eef6989eeab2faf903e3747a
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/apm-authoring-convention.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:9e7ee931f4b93ef52feb9472265b2432e4cf990183103a35743ed7acb1761d86
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/aws-lambda-implementation.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:cc136015e05864db649c85849fc830526f8ff019cd0e49d39683c1f19501bfc8
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/control-tower-initialization.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:9900e52d1a862dcba92ec8c723ea8d241e6a2b9785dfb8e1d2ea7a98adf40afb
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/control-tower-scp-compatibility.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:07f76979ff73f4a29c3d34a688d7d5ef78e55c969924004e29f07efe8b093d21
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/landing-zone-account-provisioning.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:1cff82dc101fc65a489d2357be4924b793b55beae28206e3c487c7a4ecf9c102
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/landing-zone-cloudformation-governance.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:b13653dfd0552e16c834c314238a39757c884ae61a46f6a4ae4a4255f71ae907
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/landing-zone-identity-center-governance.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:12ee9c37e9cfa7ab5901c7f38131a8107139542491a28c12009d1c165ed440ad
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/landing-zone-ou-governance.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:8b048e10938308889e13d13250fb4c183e2799fef3fbd49acfd7b20a1657b980
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/landing-zone-scp-governance.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:bfcde810823ff8bf97f2a8107c6a04b3a8e69dc231756da851761975855098f7
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/shared-account-provisioning.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:da3c8c2f07914b2afbed86be8da0bcd43c00d6924ca8aae5ffb35b565d3ea6a6
+- kind: uri
+  target: mcp
+  value: github-if-it
+  runtime: claude
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: uri
+  target: mcp
+  value: github-if-it
+  runtime: vscode
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+mcp_servers:
+- github-if-it
+mcp_configs:
+  github-if-it:
+    name: github-if-it
+    transport: http
+    registry: false
+    headers:
+      Authorization: Bearer ${GITHUB_COPILOT_PAT}
+    url: https://copilot-api.if-it.ghe.com/mcp
+mcp_target_servers:
+  claude:
+  - github-if-it
+  vscode:
+  - github-if-it
+local_deployed_files:
+- .agents/skills/generate-account
+- .agents/skills/generate-account/SKILL.md
+- .agents/skills/generate-landing-zone-identity-center
+- .agents/skills/generate-landing-zone-identity-center/SKILL.md
+- .agents/skills/generate-landing-zone-ou
+- .agents/skills/generate-landing-zone-ou/SKILL.md
+- .agents/skills/generate-scp
+- .agents/skills/generate-scp/SKILL.md
+- .agents/skills/initialize-control-tower
+- .agents/skills/initialize-control-tower/SKILL.md
+- .agents/skills/update-scp-for-control-tower
+- .agents/skills/update-scp-for-control-tower/SKILL.md
+- .claude/rules/apm-authoring-convention.md
+- .claude/rules/aws-lambda-implementation.md
+- .claude/rules/control-tower-initialization.md
+- .claude/rules/control-tower-scp-compatibility.md
+- .claude/rules/landing-zone-account-provisioning.md
+- .claude/rules/landing-zone-cloudformation-governance.md
+- .claude/rules/landing-zone-identity-center-governance.md
+- .claude/rules/landing-zone-ou-governance.md
+- .claude/rules/landing-zone-scp-governance.md
+- .claude/rules/shared-account-provisioning.md
+- .claude/skills/generate-account
+- .claude/skills/generate-account/SKILL.md
+- .claude/skills/generate-landing-zone-identity-center
+- .claude/skills/generate-landing-zone-identity-center/SKILL.md
+- .claude/skills/generate-landing-zone-ou
+- .claude/skills/generate-landing-zone-ou/SKILL.md
+- .claude/skills/generate-scp
+- .claude/skills/generate-scp/SKILL.md
+- .claude/skills/initialize-control-tower
+- .claude/skills/initialize-control-tower/SKILL.md
+- .claude/skills/update-scp-for-control-tower
+- .claude/skills/update-scp-for-control-tower/SKILL.md
+- .github/instructions/apm-authoring-convention.instructions.md
+- .github/instructions/aws-lambda-implementation.instructions.md
+- .github/instructions/control-tower-initialization.instructions.md
+- .github/instructions/control-tower-scp-compatibility.instructions.md
+- .github/instructions/landing-zone-account-provisioning.instructions.md
+- .github/instructions/landing-zone-cloudformation-governance.instructions.md
+- .github/instructions/landing-zone-identity-center-governance.instructions.md
+- .github/instructions/landing-zone-ou-governance.instructions.md
+- .github/instructions/landing-zone-scp-governance.instructions.md
+- .github/instructions/shared-account-provisioning.instructions.md
+local_deployed_file_hashes:
+  .agents/skills/generate-account/SKILL.md: sha256:6c6a6b0ca7f6bf8e34d72c4844f6f5f7369d52f2aa6f2ec6cfb91675b37d112a
+  .agents/skills/generate-landing-zone-identity-center/SKILL.md: sha256:f650a39a6494168adf0019c9850d1f4519436044b6081f76b8601442df0c2f63
+  .agents/skills/generate-landing-zone-ou/SKILL.md: sha256:8a2d4d11ce592b9a14a2067f38800e43e87087cc8b9f721a388e619fcb438833
+  .agents/skills/generate-scp/SKILL.md: sha256:21863f48f0c67d670bed8bfdbcb3374aeede45fd8727aabc7993278295dee77e
+  .agents/skills/initialize-control-tower/SKILL.md: sha256:2e79f5f20bf4273c427161ab4a709dae2136906ae6c766047028dc89035e9bbe
+  .agents/skills/update-scp-for-control-tower/SKILL.md: sha256:be95bec83e33e9b947e00a808f7582e34ab10b71eef6989eeab2faf903e3747a
+  .claude/rules/apm-authoring-convention.md: sha256:3ed005e30fc16130978f1394c8f721ef56f6750b6e8266c9c19cfcfe4543a025
+  .claude/rules/aws-lambda-implementation.md: sha256:5a59adeb900d4e18ead43f6111b495e47e9d2481e27220ede9f93d1ca36a92d5
+  .claude/rules/control-tower-initialization.md: sha256:38b53838bc97ad6fdd3fe64e03e9d50b25893c4ccf00c57a31f00037c7484a26
+  .claude/rules/control-tower-scp-compatibility.md: sha256:73184bfcd1510b12ec05eb6fb3c62d9b0a05383a471bec5db00830508871c8ca
+  .claude/rules/landing-zone-account-provisioning.md: sha256:c2a7cdefb26e7708b1fd1951962c6fc3c4146b3d978337b5386c5282c7cebdc3
+  .claude/rules/landing-zone-cloudformation-governance.md: sha256:d852a4820e137c1806b4d54a1c2beca523e1c4e49eb3319ee6ea2dd680f14ba9
+  .claude/rules/landing-zone-identity-center-governance.md: sha256:639ac348a478511d09871a5585b441cb98debdcbdd6b38655600a35c98ef120f
+  .claude/rules/landing-zone-ou-governance.md: sha256:43babc17258fd4b83b4a179c5f78795f0352282b39f8c85d7852b6f50bf33793
+  .claude/rules/landing-zone-scp-governance.md: sha256:33ad8bf5096c6fe0bbcfe67ac6a8bfba943ef6e6a06092605d1d3e6bf98bf5e4
+  .claude/rules/shared-account-provisioning.md: sha256:d72d7dede1103de80f462bf6aee4f2668f3e9c7b12845e86b305bb2208f81dcf
+  .claude/skills/generate-account/SKILL.md: sha256:6c6a6b0ca7f6bf8e34d72c4844f6f5f7369d52f2aa6f2ec6cfb91675b37d112a
+  .claude/skills/generate-landing-zone-identity-center/SKILL.md: sha256:f650a39a6494168adf0019c9850d1f4519436044b6081f76b8601442df0c2f63
+  .claude/skills/generate-landing-zone-ou/SKILL.md: sha256:8a2d4d11ce592b9a14a2067f38800e43e87087cc8b9f721a388e619fcb438833
+  .claude/skills/generate-scp/SKILL.md: sha256:21863f48f0c67d670bed8bfdbcb3374aeede45fd8727aabc7993278295dee77e
+  .claude/skills/initialize-control-tower/SKILL.md: sha256:2e79f5f20bf4273c427161ab4a709dae2136906ae6c766047028dc89035e9bbe
+  .claude/skills/update-scp-for-control-tower/SKILL.md: sha256:be95bec83e33e9b947e00a808f7582e34ab10b71eef6989eeab2faf903e3747a
+  .github/instructions/apm-authoring-convention.instructions.md: sha256:9e7ee931f4b93ef52feb9472265b2432e4cf990183103a35743ed7acb1761d86
+  .github/instructions/aws-lambda-implementation.instructions.md: sha256:cc136015e05864db649c85849fc830526f8ff019cd0e49d39683c1f19501bfc8
+  .github/instructions/control-tower-initialization.instructions.md: sha256:9900e52d1a862dcba92ec8c723ea8d241e6a2b9785dfb8e1d2ea7a98adf40afb
+  .github/instructions/control-tower-scp-compatibility.instructions.md: sha256:07f76979ff73f4a29c3d34a688d7d5ef78e55c969924004e29f07efe8b093d21
+  .github/instructions/landing-zone-account-provisioning.instructions.md: sha256:1cff82dc101fc65a489d2357be4924b793b55beae28206e3c487c7a4ecf9c102
+  .github/instructions/landing-zone-cloudformation-governance.instructions.md: sha256:b13653dfd0552e16c834c314238a39757c884ae61a46f6a4ae4a4255f71ae907
+  .github/instructions/landing-zone-identity-center-governance.instructions.md: sha256:12ee9c37e9cfa7ab5901c7f38131a8107139542491a28c12009d1c165ed440ad
+  .github/instructions/landing-zone-ou-governance.instructions.md: sha256:8b048e10938308889e13d13250fb4c183e2799fef3fbd49acfd7b20a1657b980
+  .github/instructions/landing-zone-scp-governance.instructions.md: sha256:bfcde810823ff8bf97f2a8107c6a04b3a8e69dc231756da851761975855098f7
+  .github/instructions/shared-account-provisioning.instructions.md: sha256:da3c8c2f07914b2afbed86be8da0bcd43c00d6924ca8aae5ffb35b565d3ea6a6
