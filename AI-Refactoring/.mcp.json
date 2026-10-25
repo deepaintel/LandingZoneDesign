@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "github-if-it": {
+      "type": "http",
+      "url": "https://copilot-api.if-it.ghe.com/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GITHUB_COPILOT_PAT}"
+      }
+    }
+  }
+}
