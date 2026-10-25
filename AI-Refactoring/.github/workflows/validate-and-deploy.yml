@@ -1,0 +1,313 @@
+name: Validate and deploy landing zone
+
+on:
+  workflow_call:
+    inputs:
+      aws-environment:
+        description: Target AWS environment (staging or production).
+        required: true
+        type: string
+      github-environment:
+        description: Protected GitHub Environment for deployment approval.
+        required: true
+        type: string
+      diff-continue-on-error:
+        description: Whether a failed CDK diff may be treated as advisory.
+        required: true
+        type: boolean
+    outputs:
+      account-id:
+        description: AWS management account targeted by this deployment.
+        value: ${{ jobs.validate-and-deploy.outputs.account-id }}
+      organization-id:
+        description: AWS Organizations organization ID.
+        value: ${{ jobs.validate-and-deploy.outputs.organization-id }}
+      organization-root-id:
+        description: AWS Organizations root ID.
+        value: ${{ jobs.validate-and-deploy.outputs.organization-root-id }}
+      service-control-policy-status:
+        description: Service Control Policy type status on the organization root.
+        value: ${{ jobs.validate-and-deploy.outputs.service-control-policy-status }}
+      resource-control-policy-status:
+        description: Resource Control Policy type status on the organization root.
+        value: ${{ jobs.validate-and-deploy.outputs.resource-control-policy-status }}
+      identity-center-instance-arn:
+        description: IAM Identity Center instance ARN.
+        value: ${{ jobs.validate-and-deploy.outputs.identity-center-instance-arn }}
+      audit-account-id:
+        description: Audit account ID from the deployed shared-accounts stack.
+        value: ${{ jobs.validate-and-deploy.outputs.audit-account-id }}
+      log-archive-account-id:
+        description: Log Archive account ID from the deployed shared-accounts stack.
+        value: ${{ jobs.validate-and-deploy.outputs.log-archive-account-id }}
+      landing-zone-arn:
+        description: Control Tower Landing Zone ARN.
+        value: ${{ jobs.validate-and-deploy.outputs.landing-zone-arn }}
+      operation-identifier:
+        description: Control Tower CreateLandingZone operation identifier, if started.
+        value: ${{ jobs.validate-and-deploy.outputs.operation-identifier }}
+      landing-zone-exists:
+        description: Whether Control Tower found a Landing Zone before initialization.
+        value: ${{ jobs.validate-and-deploy.outputs.landing-zone-exists }}
+      auto-enrollment:
+        description: Verified AWS Control Tower account auto-enrollment setting (enabled or disabled).
+        value: ${{ jobs.validate-and-deploy.outputs.auto-enrollment }}
+      auto-enrollment-operation-identifier:
+        description: Landing Zone operation awaited or submitted for auto-enrollment, if any.
+        value: ${{ jobs.validate-and-deploy.outputs.auto-enrollment-operation-identifier }}
+      account-baseline-acceptance:
+        description: Common Account Security Baseline v1.0 acceptance after post-deployment validation (PASS or FAIL).
+        value: ${{ jobs.validate-and-deploy.outputs.account-baseline-acceptance }}
+      account-baseline-results:
+        description: Common Account Security Baseline v1.0 actual/expected account-control results.
+        value: ${{ jobs.validate-and-deploy.outputs.account-baseline-results }}
+    secrets:
+      READ_PACKAGES:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-deploy:
+    name: Validate and deploy ${{ inputs.aws-environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.github-environment }}
+    # Explicit job ceiling; the Control Tower enrollment step budgets its rounds against it.
+    timeout-minutes: 360
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    outputs:
+      account-id: ${{ steps.workspace.outputs.account-id }}
+      organization-id: ${{ steps.prepare_org.outputs.organization-id }}
+      organization-root-id: ${{ steps.prepare_org.outputs.organization-root-id }}
+      service-control-policy-status: ${{ steps.prepare_org.outputs.service-control-policy-status }}
+      resource-control-policy-status: ${{ steps.prepare_org.outputs.resource-control-policy-status }}
+      identity-center-instance-arn: ${{ steps.identity_center.outputs.instance-arn }}
+      audit-account-id: ${{ steps.shared_accounts.outputs.audit-account-id }}
+      log-archive-account-id: ${{ steps.shared_accounts.outputs.log-archive-account-id }}
+      landing-zone-arn: ${{ steps.control_tower.outputs.landing-zone-arn }}
+      operation-identifier: ${{ steps.control_tower.outputs.operation-identifier }}
+      landing-zone-exists: ${{ steps.control_tower.outputs.landing-zone-exists }}
+      auto-enrollment: ${{ steps.auto_enrollment.outputs.auto-enrollment }}
+      auto-enrollment-operation-identifier: ${{ steps.auto_enrollment.outputs.operation-identifier }}
+      account-baseline-acceptance: ${{ steps.account_baseline.outputs.acceptance }}
+      account-baseline-results: ${{ steps.account_baseline.outputs.results }}
+    env:
+      ESC_PARTITION: eusc
+      ESC_REGION: eusc-de-east-1
+      DEPLOYMENT_ROLE_NAME: github-actions-role
+    steps:
+      - name: Check deployment inputs
+        env:
+          AWS_ENVIRONMENT: ${{ inputs.aws-environment }}
+          GITHUB_ENVIRONMENT: ${{ inputs.github-environment }}
+        run: |
+          case "$AWS_ENVIRONMENT" in
+            staging|production) ;;
+            *) echo "::error::Unsupported deployment environment"; exit 1 ;;
+          esac
+          if [ "$GITHUB_ENVIRONMENT" != "$AWS_ENVIRONMENT" ]; then
+            echo "::error::GitHub Environment must match the deployment environment"
+            exit 1
+          fi
+          # Job start time, so long-running steps can budget against timeout-minutes.
+          echo "LZ_JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        id: workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Validate release candidate
+        uses: ./.github/actions/validate-release
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+
+      - name: Configure AWS ESC credentials with OIDC
+        uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+        with:
+          auth-method: oidc
+          aws-partition: ${{ env.ESC_PARTITION }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          aws-session-name: lz-${{ inputs.aws-environment }}-ou-${{ github.run_id }}
+
+      - name: Prepare AWS Organization
+        id: prepare_org
+        uses: ./.github/actions/prepare-organization
+        with:
+          expected-account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          ensure-scp-policy-type: 'true'
+          ensure-rcp-policy-type: 'true'
+
+      - name: Deploy OU Structure stack
+        uses: ./.github/actions/deploy-ou-structure
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-root-id: ${{ steps.prepare_org.outputs.organization-root-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          diff-continue-on-error: ${{ inputs.diff-continue-on-error }}
+
+      - name: Deploy IAM Identity Center
+        id: identity_center
+        uses: ./.github/actions/deploy-identity-center
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+
+      - name: Deploy SCIM synchronization stack
+        uses: ./.github/actions/deploy-scim-sync
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          diff-continue-on-error: ${{ inputs.diff-continue-on-error }}
+
+      - name: Deploy SCIM cleanup stack
+        uses: ./.github/actions/deploy-scim-cleanup
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          diff-continue-on-error: ${{ inputs.diff-continue-on-error }}
+
+      - name: Deploy Organization Policy stack
+        uses: ./.github/actions/deploy-organization-policies
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-root-id: ${{ steps.prepare_org.outputs.organization-root-id }}
+          organization-id: ${{ steps.prepare_org.outputs.organization-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          diff-continue-on-error: ${{ inputs.diff-continue-on-error }}
+
+      - name: Deploy Shared Accounts stack
+        id: shared_accounts
+        uses: ./.github/actions/deploy-shared-accounts
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          diff-continue-on-error: ${{ inputs.diff-continue-on-error }}
+
+      - name: Deploy Control Tower prerequisite roles stack
+        uses: ./.github/actions/deploy-control-tower-roles
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          account-id: ${{ steps.workspace.outputs.account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+          diff-continue-on-error: ${{ inputs.diff-continue-on-error }}
+
+      - name: Initialise AWS Control Tower Landing Zone 4.0
+        id: control_tower
+        uses: ./.github/actions/initialize-control-tower
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          audit-account-id: ${{ steps.shared_accounts.outputs.audit-account-id }}
+          log-archive-account-id: ${{ steps.shared_accounts.outputs.log-archive-account-id }}
+          aws-region: ${{ env.ESC_REGION }}
+
+      # Remaining Landing Zone member accounts, derived only from this environment's merged
+      # configuration (config/default.yaml + config/<environment>.yaml):
+      #   Staging    - SharedServices, Network, and the six CCoE Verification accounts (8).
+      #   Production - exactly SharedServices and Network (2); no Verification or workload
+      #                accounts. Enforced at synth and again before provisioning.
+      # The action reconciles the accounts with AWS Organizations at runtime: a read-only plan,
+      # creation of MISSING accounts only, then validation. Reruns reuse existing accounts.
+      # Audit and Log Archive are created by the shared-accounts step above, not here. Production
+      # reaches this step only through the protected `production` GitHub Environment approval.
+      - name: Provision remaining Landing Zone accounts
+        id: landing_zone_accounts
+        uses: ./.github/actions/deploy-landing-zone-accounts
+        with:
+          aws-environment: ${{ inputs.aws-environment }}
+          aws-region: ${{ env.ESC_REGION }}
+
+      # Staging and Production: enable AWSControlTowerBaseline on the shared rollout OUs (parents
+      # first) for the accounts reconciled above, then validate. Production reaches this step only
+      # through the protected `production` GitHub Environment approval of this job. The action runs
+      # its read-only plan before any mutation and cross-checks the account step's runtime
+      # account-ids and ou-ids against the live Organization. It refreshes OIDC credentials for
+      # every round because github-actions-role sessions last one hour.
+      - name: Enroll OUs and accounts into AWS Control Tower
+        if: ${{ inputs.aws-environment == 'staging' || inputs.aws-environment == 'production' }}
+        uses: ./.github/actions/enroll-control-tower-accounts
+        with:
+          environment: ${{ inputs.aws-environment }}
+          management-account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-id: ${{ steps.prepare_org.outputs.organization-id }}
+          landing-zone-arn: ${{ steps.control_tower.outputs.landing-zone-arn }}
+          audit-account-id: ${{ steps.shared_accounts.outputs.audit-account-id }}
+          log-archive-account-id: ${{ steps.shared_accounts.outputs.log-archive-account-id }}
+          account-ids: ${{ steps.landing_zone_accounts.outputs.account-ids }}
+          ou-ids: ${{ steps.landing_zone_accounts.outputs.ou-ids }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-partition: ${{ env.ESC_PARTITION }}
+          deployment-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          job-started-at: ${{ env.LZ_JOB_STARTED_AT }}
+          job-timeout-minutes: '360'
+
+      # Staging and Production: reconcile AWS Control Tower account auto-enrollment with this
+      # environment's `controlTower.autoEnrollment.enabled`, ENABLE ONLY. Runs after OU enrollment and
+      # its read-only validation, so the switch happens only once every configured account is enrolled.
+      # Release A enables Staging and keeps Production disabled; Release B enables Production after
+      # Staging verification and sign-off. Production reaches this step only through the protected
+      # `production` GitHub Environment approval of this job. A read-only plan precedes the single
+      # UpdateLandingZone, which is the only Landing Zone write in this step; a configuration of
+      # `false` with AWS reporting enabled fails closed.
+      - name: Configure AWS Control Tower account auto-enrollment
+        id: auto_enrollment
+        if: ${{ inputs.aws-environment == 'staging' || inputs.aws-environment == 'production' }}
+        uses: ./.github/actions/configure-control-tower-auto-enrollment
+        with:
+          environment: ${{ inputs.aws-environment }}
+          management-account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-id: ${{ steps.prepare_org.outputs.organization-id }}
+          landing-zone-arn: ${{ steps.control_tower.outputs.landing-zone-arn }}
+          audit-account-id: ${{ steps.shared_accounts.outputs.audit-account-id }}
+          log-archive-account-id: ${{ steps.shared_accounts.outputs.log-archive-account-id }}
+          account-ids: ${{ steps.landing_zone_accounts.outputs.account-ids }}
+          ou-ids: ${{ steps.landing_zone_accounts.outputs.ou-ids }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-partition: ${{ env.ESC_PARTITION }}
+          deployment-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          job-started-at: ${{ env.LZ_JOB_STARTED_AT }}
+          job-timeout-minutes: '360'
+
+      # Staging and Production: Common Account Security Baseline v1.0 (enable only) for every eligible
+      # Landing Zone account of this environment (Staging 8, Production 2), after account provisioning,
+      # OU enrollment and auto-enrollment have succeeded. Management, Audit, Log Archive and Suspended
+      # accounts are never enforced. A read-only environment-wide preflight gate must pass before any
+      # write; any failure, and any post-deployment acceptance failure, fails this job, so Production
+      # never starts after a failed Staging run. Production reaches this step only through the
+      # protected `production` GitHub Environment approval of this job, for the same release commit.
+      - name: Reconcile the Common Account Security Baseline
+        id: account_baseline
+        if: ${{ inputs.aws-environment == 'staging' || inputs.aws-environment == 'production' }}
+        uses: ./.github/actions/reconcile-account-baseline
+        with:
+          environment: ${{ inputs.aws-environment }}
+          management-account-id: ${{ steps.workspace.outputs.account-id }}
+          organization-id: ${{ steps.prepare_org.outputs.organization-id }}
+          landing-zone-arn: ${{ steps.control_tower.outputs.landing-zone-arn }}
+          audit-account-id: ${{ steps.shared_accounts.outputs.audit-account-id }}
+          log-archive-account-id: ${{ steps.shared_accounts.outputs.log-archive-account-id }}
+          account-ids: ${{ steps.landing_zone_accounts.outputs.account-ids }}
+          ou-ids: ${{ steps.landing_zone_accounts.outputs.ou-ids }}
+          aws-region: ${{ env.ESC_REGION }}
+          aws-partition: ${{ env.ESC_PARTITION }}
+          deployment-role-name: ${{ env.DEPLOYMENT_ROLE_NAME }}
+          job-started-at: ${{ env.LZ_JOB_STARTED_AT }}
+          job-timeout-minutes: '360'

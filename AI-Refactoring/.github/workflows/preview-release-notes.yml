@@ -1,0 +1,67 @@
+# =============================================================================================
+# Preview the release notes a release tag would get, without deploying or publishing anything.
+#
+# Runs the same verification as the publish step of deploy.yml (scripts/release-notes.ts) against
+# a branch or commit, for a release tag that usually does not exist yet, for example
+# release-v0.0.3 previewed against main before release/lz-v0.0.3 is cut. The result and the
+# verification report go to the job summary. Read-only: no AWS credentials, no tag, no release,
+# no branch change. GitHub's own generator is not called, so the list is built from the commit
+# range in the same format; the publish step uses GitHub's real notes.
+# =============================================================================================
+name: preview-release-notes
+
+on:
+  workflow_dispatch:
+    inputs:
+      release-tag:
+        description: Release tag to preview, for example release-v0.0.3
+        required: true
+        type: string
+      target-ref:
+        description: Branch or commit to preview the release from
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preview-release-notes-${{ inputs.release-tag }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Preview ${{ inputs.release-tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          aws-environment: production
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Preview verified release notes
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release-tag }}
+          TARGET_REF: ${{ inputs.target-ref }}
+        run: |
+          set -euo pipefail
+          pnpm exec tsx scripts/release-notes.ts preview \
+            --release-tag "$RELEASE_TAG" --target-ref "$TARGET_REF" \
+            --github --fetch-history \
+            --output-file "${RUNNER_TEMP}/release-notes.md"
+          {
+            echo "### Release notes preview for \`${RELEASE_TAG}\` at \`${TARGET_REF}\`"
+            echo
+            cat "${RUNNER_TEMP}/release-notes.md"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,102 @@
+name: Retire release branch
+description: >
+  Delete a released `release/lz-vX.Y.Z` branch so it cannot receive further commits. Every precondition is
+  checked first with the read-only `github-token`: an eligible branch name and matching release tag, a
+  successful Production deployment and GitHub Release publication, the branch still at `released-sha`, the
+  tag on that commit, a published Release, no open pull request or pending backport, and no active workflow
+  run or deployment. Only then is a short-lived GitHub App installation token minted, narrowed to this
+  repository and `contents: write`, used for the deletion, and revoked. The App must be on the bypass list of
+  the rules that restrict deleting `release/**`. Cleanup never fails the release: the result is the
+  `outcome` output (`deleted`, `already-deleted`, `skipped` or `failed`) with a `reason`, reported as a notice
+  or a warning. Requires a checked-out repository with the workspace set up. Governed by
+  `.apm/skills/manage-landing-zone-release-workflows/SKILL.md`.
+inputs:
+  github-token:
+    description: 'Workflow token with read access to contents, pull requests, actions and deployments.'
+    required: true
+  app-id:
+    description: App ID (or Client ID) of the release-cleanup GitHub App. Empty until configured.
+    required: false
+    default: ''
+  app-private-key:
+    description: Private key of the release-cleanup GitHub App. Empty until configured.
+    required: false
+    default: ''
+  release-branch:
+    description: Short name of the release branch to delete (for example `release/lz-v0.0.3`).
+    required: true
+  released-sha:
+    description: Commit that was released; the branch is deleted only while it still points here.
+    required: true
+  release-tag:
+    description: Release tag that must point to `released-sha` (for example `release-v0.0.3`).
+    required: true
+  production-result:
+    description: Result of the Production deployment job; must be `success`.
+    required: true
+  publish-result:
+    description: Result of the GitHub Release publication job; must be `success`.
+    required: true
+  cleanup-environment:
+    description: >
+      GitHub Environment of the calling job, which holds the App credentials. Its own in-progress deployment
+      is not counted as active work on the branch.
+    required: false
+    default: ''
+outputs:
+  outcome:
+    description: '`deleted`, `already-deleted`, `skipped` or `failed`.'
+    value: ${{ steps.cleanup.outputs.outcome }}
+  reason:
+    description: Why the cleanup ended with this outcome.
+    value: ${{ steps.cleanup.outputs.reason }}
+runs:
+  using: composite
+  steps:
+    - name: Delete release branch after successful release
+      id: cleanup
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        APP_ID: ${{ inputs.app-id }}
+        APP_PRIVATE_KEY: ${{ inputs.app-private-key }}
+        RELEASE_BRANCH: ${{ inputs.release-branch }}
+        RELEASED_SHA: ${{ inputs.released-sha }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        PRODUCTION_RESULT: ${{ inputs.production-result }}
+        PUBLISH_RESULT: ${{ inputs.publish-result }}
+        CLEANUP_ENVIRONMENT: ${{ inputs.cleanup-environment }}
+      run: |
+        # Deliberately without errexit: every failure below becomes an explicit `failed` outcome instead
+        # of a failed step. The branch is only ever deleted inside the script, after all checks passed.
+        set -uo pipefail
+        result="${RUNNER_TEMP}/release-branch-cleanup.json"
+        rm -f "$result"
+        if ! command -v pnpm > /dev/null 2>&1; then
+          outcome=failed
+          reason='The workspace toolchain is not available; the branch was not deleted.'
+        elif pnpm exec tsx scripts/retire-release-branch.ts --result-file "$result" && [ -s "$result" ]; then
+          outcome=$(jq -r '.outcome // empty' "$result" 2> /dev/null || true)
+          reason=$(jq -r '.reason // empty' "$result" 2> /dev/null || true)
+        else
+          outcome=failed
+          reason='The branch cleanup script did not complete; the branch was not deleted.'
+        fi
+        case "$outcome" in
+          deleted | already-deleted | skipped | failed) ;;
+          *)
+            outcome=failed
+            reason='The branch cleanup reported no recognizable outcome; the branch was not deleted.'
+            ;;
+        esac
+        if [ ! -s "$result" ]; then
+          echo "::warning::Released branch cleanup ${outcome}: ${reason}"
+          echo "- Released branch cleanup: \`${outcome}\` - ${reason}" >> "$GITHUB_STEP_SUMMARY"
+        fi
+        delimiter="REASON_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+        {
+          echo "outcome=${outcome}"
+          echo "reason<<${delimiter}"
+          echo "${reason}"
+          echo "${delimiter}"
+        } >> "$GITHUB_OUTPUT"

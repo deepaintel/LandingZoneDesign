@@ -1,0 +1,644 @@
+# =============================================================================================
+# CI - integration validation only. NEVER deploys, NEVER bootstraps, NEVER requests AWS
+# deployment credentials (no `id-token: write` anywhere in this workflow).
+#
+# Branch model:
+#   feature/* -> main -> release/* -> Staging -> protected Production approval -> Production
+#     -> release tag + GitHub Release -> release branch deleted (closed)
+#   feature/fix-* | hotfix/* -> main -> backport/* -> PR -> unreleased release/*
+#
+# `main` runs CI only. `release/*` is the only AWS deployment source (deploy.yml).
+# `backport/*` is validated here through its PR to `release/*` but never deploys.
+# =============================================================================================
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+      - 'hotfix/**'
+      - 'backport/**'
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+
+# No id-token. CI must not be able to obtain AWS deployment credentials.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Build, test and validate Landing Zone and policy templates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup Node
+        uses: ccoe-aws/reusable-workflows/.github/actions/setup-node@main
+        with:
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Enable PNPM
+        uses: ccoe-aws/reusable-workflows/.github/actions/enable-pnpm@main
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Microsoft APM
+        uses: ccoe-aws/reusable-workflows/.github/actions/microsoft-apm@main
+        with:
+          apm-version: '0.28.0'
+
+      - name: Validate APM project
+        run: |
+          set -euo pipefail
+          apm audit --ci
+
+      - name: Validate configuration loading
+        run: |
+          set -euo pipefail
+
+          for env in staging production; do
+            ACCOUNT_ID=$(pnpm exec ccoe-config-reader "${env}" --configDirName config | jq -r '.aws.accountId')
+
+            if ! printf '%s' "${ACCOUNT_ID}" | grep -qE '^[0-9]{12}$'; then
+              echo "::error::aws.accountId missing or malformed after merging config/default.yaml with config/${env}.yaml (got '${ACCOUNT_ID}')."
+              exit 1
+            fi
+
+            echo "Configuration validation passed for ${env}. Resolved accountId: ${ACCOUNT_ID}"
+          done
+
+      - name: Build (strict TypeScript)
+        run: pnpm run build
+
+      - name: Typecheck tests
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Unit and CDK assertion tests
+        run: pnpm test
+
+      - name: CDK synth (staging)
+        run: pnpm run synth:staging
+
+      - name: Validate synthesized OU template
+        run: pnpm run validate:ou-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized Identity Center template
+        run: pnpm run validate:identity-center-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized SCIM synchronization template
+        run: pnpm run validate:scim-sync-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized policy template
+        run: pnpm run validate:policy-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate synthesized shared-accounts template
+        run: pnpm run validate:accounts-template -- --environment staging --output-dir cdk.out/staging
+
+      - name: Validate Control Tower Landing Zone 4.0 manifest (staging)
+        run: pnpm run validate:control-tower-manifest -- --environment staging
+
+      - name: CDK synth (production)
+        run: pnpm run synth:production
+
+      - name: Validate synthesized OU template (production)
+        run: pnpm run validate:ou-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized Identity Center template (production)
+        run: pnpm run validate:identity-center-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized SCIM synchronization template (production)
+        run: pnpm run validate:scim-sync-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized policy template (production)
+        run: pnpm run validate:policy-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate synthesized shared-accounts template (production)
+        run: pnpm run validate:accounts-template -- --environment production --output-dir cdk.out/production
+
+      - name: Validate Control Tower Landing Zone 4.0 manifest (production)
+        run: pnpm run validate:control-tower-manifest -- --environment production
+
+      # -------------------------------------------------------------------------------------
+      # ESC partition / Region correctness in SOURCE. The synthesized templates themselves are
+      # already checked by validate:ou-template.
+      #
+      # `.github/` is excluded so the guard cannot match its own patterns, and `tests/` is
+      # excluded because negative-test fixtures deliberately contain commercial values in order
+      # to prove the validator rejects them.
+      # -------------------------------------------------------------------------------------
+      - name: ESC partition and Region source checks
+        run: |
+          set -euo pipefail
+          SCAN_PATHS="bin lib config scripts package.json cdk.json tsconfig.json"
+
+          fail=0
+
+          if grep -rInE 'arn:aws[:]' $SCAN_PATHS; then
+            echo "::error::Commercial ARN prefix found. All ARNs must use arn:aws-eusc:."
+            fail=1
+          fi
+
+          if grep -rInE 'sts\.amazonaws\.com' $SCAN_PATHS; then
+            echo "::error::Commercial STS endpoint found. ESC uses sts.eusc-de-east-1.amazonaws.eu."
+            fail=1
+          fi
+
+          if grep -rInE '\b(us|eu|ap|sa|ca|me|af|il|cn)-(gov-)?[a-z]+-[0-9]\b' $SCAN_PATHS; then
+            echo "::error::Non-ESC AWS Region reference found. Only eusc-de-east-1 is permitted."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "ESC partition and Region source checks passed."
+
+      # -------------------------------------------------------------------------------------
+      # Governance assertions on the workflow definitions themselves, parsed as YAML rather
+      # than grepped, so the checks cannot drift with formatting.
+      # -------------------------------------------------------------------------------------
+      - name: Deployment-authority checks
+        run: |
+          node --input-type=module -e "
+          import { readFileSync } from 'node:fs';
+          import { parse } from 'yaml';
+
+          const failures = [];
+          const load = (file) => {
+            const doc = parse(readFileSync(file, 'utf8'));
+            // YAML 1.1 parsers coerce the on key to boolean true; tolerate both forms.
+            return { doc, triggers: doc.on ?? doc[true] ?? {} };
+          };
+
+          const ci = load('.github/workflows/ci.yml');
+          for (const [name, job] of Object.entries(ci.doc.jobs ?? {})) {
+            if (job?.permissions && 'id-token' in job.permissions) {
+              failures.push('ci.yml job ' + name + ' must not request id-token permissions.');
+            }
+          }
+          if (ci.doc.permissions && 'id-token' in ci.doc.permissions) {
+            failures.push('ci.yml must not request id-token permissions at workflow level.');
+          }
+
+          const merged = load('.github/workflows/deploy.yml');
+          if (Object.keys(merged.triggers).join(',') !== 'push' ||
+              JSON.stringify(merged.triggers.push?.branches) !== JSON.stringify(['release/**'])) {
+            failures.push('deploy.yml must trigger only on release/** pushes.');
+          }
+
+          const wrapper = load('.github/workflows/validate-and-deploy.yml');
+          const deploymentJob = wrapper.doc.jobs?.['validate-and-deploy'];
+          const protectionJob = merged.doc.jobs?.['verify-release-branch'];
+          const branchAction = load('.github/actions/verify-release-branch/action.yml').doc;
+          const stagingJob = merged.doc.jobs?.['deploy-to-staging'];
+          const productionJob = merged.doc.jobs?.['deploy-to-production'];
+          if (protectionJob?.permissions?.contents !== 'read' ||
+              protectionJob?.permissions?.['id-token'] === 'write' ||
+              !protectionJob?.steps?.some((step) => step.uses === './.github/actions/verify-release-branch') ||
+              branchAction?.runs?.steps?.[0]?.name !== 'Check semantic release version' ||
+              !branchAction?.outputs?.['release-tag']?.value?.includes('steps.version.outputs.release-tag') ||
+              !String(protectionJob?.outputs?.release_tag).includes('steps.verify.outputs') ||
+              !branchAction?.runs?.steps?.[1]?.run?.includes('/rules/branches/') ||
+              !branchAction?.runs?.steps?.[2]?.run?.includes('/git/ref/tags/') ||
+              stagingJob?.needs !== 'verify-release-branch' ||
+              productionJob?.needs !== 'deploy-to-staging') {
+            failures.push('Deployments must depend on protected branch, SemVer, and tag availability checks.');
+          }
+          // Post-Production release mechanics live in composite actions; the workflow keeps the
+          // job ordering, permissions, and the inputs (release tag, commit SHA, token) they act on.
+          const runSha = '$' + '{{ github.sha }}';
+          const workflowToken = '$' + '{{ github.token }}';
+          const actionStep = (job, action) => job?.steps?.find((step) => step.uses === './.github/actions/' + action);
+          const actionScript = (action) => (load('.github/actions/' + action + '/action.yml').doc?.runs?.steps ?? [])
+            .map((step) => step.run ?? '').join('\n');
+          const tagJob = merged.doc.jobs?.['tag-release'];
+          const tagStep = actionStep(tagJob, 'tag-release');
+          if (!Array.isArray(tagJob?.needs) || tagJob.needs.length !== 2 ||
+              !tagJob.needs.includes('verify-release-branch') ||
+              !tagJob.needs.includes('deploy-to-production') ||
+              tagStep?.id !== 'tag' ||
+              !String(tagStep?.with?.['release-tag']).includes('verify-release-branch') ||
+              tagStep?.with?.['commit-sha'] !== runSha ||
+              actionScript('tag-release').includes('semver_pattern') ||
+              tagJob?.permissions?.contents !== 'write' ||
+              tagJob?.permissions?.['id-token'] === 'write' ||
+              stagingJob?.permissions?.contents !== 'read' || productionJob?.permissions?.contents !== 'read') {
+            failures.push('Only the post-Production tag job may write contents using the preflight release tag.');
+          }
+          // Release lifecycle: GitHub Release only after tagging, branch deletion only after the release.
+          const releaseJob = merged.doc.jobs?.['publish-release'];
+          const retireJob = merged.doc.jobs?.['retire-release-branch'];
+          const releaseStep = actionStep(releaseJob, 'publish-github-release');
+          const retireStep = actionStep(retireJob, 'retire-release-branch');
+          const releaseSteps = releaseJob?.steps ?? [];
+          const releaseWorkspaceIndex = releaseSteps.findIndex((step) => step.uses === './.github/actions/setup-workspace');
+          const publishScript = actionScript('publish-github-release');
+          if (releaseJob?.needs !== 'tag-release' || releaseJob?.permissions?.contents !== 'write' ||
+              releaseJob?.permissions?.['id-token'] === 'write' ||
+              releaseStep?.with?.['github-token'] !== workflowToken ||
+              releaseStep?.with?.['commit-sha'] !== runSha ||
+              !String(releaseStep?.with?.['release-tag']).includes('tag-release') ||
+              releaseWorkspaceIndex < 0 || releaseWorkspaceIndex > releaseSteps.indexOf(releaseStep) ||
+              !publishScript.includes('scripts/release-notes.ts publish') ||
+              !publishScript.includes('generate_release_notes: false') ||
+              publishScript.includes('generate_release_notes: true') ||
+              protectionJob?.if !== '$' + '{{ !github.event.deleted }}') {
+            failures.push('Released branches must be deleted only after the tag and GitHub Release succeed, and release notes must be verified before a release is created.');
+          }
+          // Released-branch cleanup: only after the GitHub Release, checks with the read-only workflow
+          // token, deletion only through the GitHub App, and no way for cleanup to fail the release.
+          const retireNeeds = [].concat(retireJob?.needs ?? []);
+          const retireSteps = retireJob?.steps ?? [];
+          const retireScript = actionScript('retire-release-branch');
+          const cleanupContinues = retireSteps.filter((step) => step['continue-on-error'] === true).map((step) => step.id);
+          const appKey = 'RELEASE_CLEANUP_APP_PRIVATE_KEY';
+          const appKeyUsers = ['ci.yml', 'deploy.yml', 'validate-and-deploy.yml', 'run-scim.yml', 'preview-release-notes.yml']
+            .filter((file) => readFileSync('.github/workflows/' + file, 'utf8').includes('secrets.' + appKey));
+          if (!retireNeeds.includes('publish-release') || !retireNeeds.includes('deploy-to-production') ||
+              !retireNeeds.includes('tag-release') ||
+              Object.values(retireJob?.permissions ?? {}).includes('write') ||
+              'continue-on-error' in (retireJob ?? {}) ||
+              retireJob?.environment !== 'release-cleanup' ||
+              retireStep?.with?.['cleanup-environment'] !== 'release-cleanup' ||
+              retireStep?.id !== 'retire' ||
+              retireStep?.with?.['github-token'] !== workflowToken ||
+              retireStep?.with?.['released-sha'] !== runSha ||
+              retireStep?.with?.['app-id'] !== '$' + '{{ vars.RELEASE_CLEANUP_APP_ID }}' ||
+              retireStep?.with?.['app-private-key'] !== '$' + '{{ secrets.' + appKey + ' }}' ||
+              cleanupContinues.join(',') !== 'checkout,workspace,retire' ||
+              retireSteps[retireSteps.length - 1]?.id !== 'report' ||
+              retireSteps[retireSteps.length - 1]?.if !== '$' + '{{ always() }}' ||
+              !retireScript.includes('scripts/retire-release-branch.ts') ||
+              /\bset -e/.test(retireScript) ||
+              appKeyUsers.join(',') !== 'deploy.yml') {
+            failures.push('Released-branch cleanup must run after the GitHub Release with a read-only token, delete only through the GitHub App, and never fail the release.');
+          }
+          // The release-notes preview is read-only: manual trigger, no write permission, no AWS
+          // credentials, and none of the release mechanics.
+          const preview = load('.github/workflows/preview-release-notes.yml');
+          const previewJob = preview.doc.jobs?.preview;
+          const previewSteps = previewJob?.steps ?? [];
+          const releaseMechanics = ['aws-credentials', 'tag-release', 'publish-github-release', 'retire-release-branch'];
+          if (Object.keys(preview.triggers).join(',') !== 'workflow_dispatch' ||
+              Object.keys(preview.doc.jobs ?? {}).join(',') !== 'preview' ||
+              preview.doc.permissions?.contents !== 'read' ||
+              Object.values(preview.doc.permissions ?? {}).includes('write') ||
+              Object.values(previewJob?.permissions ?? {}).includes('write') ||
+              previewJob?.permissions?.['id-token'] === 'write' ||
+              previewSteps.some((step) => releaseMechanics.some((name) => String(step.uses ?? '').includes(name))) ||
+              previewSteps.some((step) => String(step.run ?? '').includes('release-notes.ts publish')) ||
+              !previewSteps.some((step) => String(step.run ?? '').includes('scripts/release-notes.ts preview'))) {
+            failures.push('The release-notes preview must be a manually triggered, read-only workflow that never publishes.');
+          }
+          const summaryJob = merged.doc.jobs?.['deployment-summary'];
+          const alwaysCondition = '$' + '{{ always() }}';
+          if (summaryJob?.if !== alwaysCondition ||
+              !summaryJob?.needs?.includes('deploy-to-staging') ||
+              !summaryJob?.needs?.includes('deploy-to-production') ||
+              !summaryJob?.needs?.includes('tag-release') ||
+              !summaryJob?.needs?.includes('publish-release') ||
+              !summaryJob?.needs?.includes('retire-release-branch') ||
+              summaryJob?.permissions?.contents !== 'read') {
+            failures.push('The read-only combined summary must run after tagging even if Production is rejected.');
+          }
+          for (const [job, environment, advisory] of [[stagingJob, 'staging', true], [productionJob, 'production', false]]) {
+            if (job?.uses !== './.github/workflows/validate-and-deploy.yml' ||
+                job?.with?.['aws-environment'] !== environment || job?.with?.['github-environment'] !== environment ||
+                job?.with?.['diff-continue-on-error'] !== advisory || job?.secrets !== 'inherit' ||
+                job?.permissions?.['id-token'] !== 'write') {
+              failures.push('deploy.yml must call protected validation/deployment for ' + environment + '.');
+            }
+          }
+          const steps = deploymentJob?.steps ?? [];
+          const validateIndex = steps.findIndex((step) => step.uses === './.github/actions/validate-release');
+          const credentialsIndex = steps.findIndex((step) => step.uses?.endsWith('/aws-credentials@main'));
+          if (Object.keys(wrapper.triggers).join(',') !== 'workflow_call' ||
+              Object.keys(wrapper.doc.jobs ?? {}).length !== 1 ||
+              !String(deploymentJob?.environment).includes('inputs.github-environment') ||
+              deploymentJob?.permissions?.['id-token'] !== 'write' ||
+              !steps[0]?.run?.includes('GITHUB_ENVIRONMENT') ||
+              validateIndex < 0 || credentialsIndex <= validateIndex) {
+            failures.push('The single protected job must validate and check the target environment before OIDC.');
+          }
+          const evidenceOutputs = [
+            'account-id', 'organization-id', 'organization-root-id',
+            'service-control-policy-status', 'resource-control-policy-status',
+            'identity-center-instance-arn', 'audit-account-id', 'log-archive-account-id',
+            'landing-zone-arn', 'operation-identifier', 'landing-zone-exists',
+            'auto-enrollment', 'auto-enrollment-operation-identifier',
+            'account-baseline-acceptance', 'account-baseline-results'
+          ];
+          const workflowOutputs = wrapper.triggers.workflow_call?.outputs ?? {};
+          const summaryEnv = summaryJob?.steps?.[0]?.env ?? {};
+          const summarySuffix = {
+            'account-id': 'ACCOUNT_ID',
+            'organization-id': 'ORGANIZATION_ID',
+            'organization-root-id': 'ORGANIZATION_ROOT_ID',
+            'service-control-policy-status': 'SCP_STATUS',
+            'resource-control-policy-status': 'RCP_STATUS',
+            'identity-center-instance-arn': 'IDENTITY_CENTER_ARN',
+            'audit-account-id': 'AUDIT_ACCOUNT_ID',
+            'log-archive-account-id': 'LOG_ARCHIVE_ACCOUNT_ID',
+            'landing-zone-arn': 'LANDING_ZONE_ARN',
+            'operation-identifier': 'CT_OPERATION_ID',
+            'landing-zone-exists': 'LANDING_ZONE_EXISTS',
+            'auto-enrollment': 'AUTO_ENROLLMENT',
+            'auto-enrollment-operation-identifier': 'AUTO_ENROLLMENT_OPERATION_ID',
+            'account-baseline-acceptance': 'ACCOUNT_BASELINE_ACCEPTANCE',
+            'account-baseline-results': 'ACCOUNT_BASELINE_RESULTS'
+          };
+          for (const output of evidenceOutputs) {
+            const producerMapping = deploymentJob?.outputs?.[output];
+            const workflowMapping = workflowOutputs[output]?.value;
+            if (!producerMapping || !String(workflowMapping).includes('jobs.validate-and-deploy.outputs.' + output)) {
+              failures.push('validate-and-deploy.yml must expose deployment evidence output ' + output + '.');
+            }
+            for (const prefix of ['STAGING_', 'PRODUCTION_']) {
+              const summaryValue = summaryEnv[prefix + summarySuffix[output]];
+              const expectedSummaryOutput = 'outputs[' + String.fromCharCode(39) + output + String.fromCharCode(39) + ']';
+              if (!String(summaryValue).includes(expectedSummaryOutput)) {
+                failures.push('deployment-summary must consume ' + prefix + output + ' from the reusable workflow.');
+              }
+            }
+          }
+
+          const configLoader = readFileSync('.github/actions/setup-workspace/action.yml', 'utf8');
+          if (!configLoader.includes('ccoe-config-reader') || !configLoader.includes('--configDirName config')) {
+            failures.push('Workspace setup must load configuration with ccoe-config-reader.');
+          }
+
+          const runtimeValidator = ['validate', 'identity-center-runtime'].join(':');
+          if (readFileSync('.github/workflows/ci.yml', 'utf8').includes(runtimeValidator)) {
+            failures.push('ci.yml must not run the AWS-backed Identity Center runtime validator.');
+          }
+
+          const orderedActions = [
+            'prepare-organization', 'deploy-ou-structure', 'deploy-identity-center',
+            'deploy-scim-sync', 'deploy-scim-cleanup', 'deploy-organization-policies',
+            'deploy-shared-accounts', 'deploy-control-tower-roles', 'initialize-control-tower',
+            'deploy-landing-zone-accounts', 'enroll-control-tower-accounts',
+            'configure-control-tower-auto-enrollment', 'reconcile-account-baseline'
+          ];
+          const actualActions = deploymentJob?.steps?.map((step) => step.uses?.replace('./.github/actions/', ''))
+            .filter((action) => orderedActions.includes(action)) ?? [];
+          if (JSON.stringify(actualActions) !== JSON.stringify(orderedActions)) {
+            failures.push('validate-and-deploy.yml must deploy the approved stacks in order in both environments.');
+          }
+          // Remaining Landing Zone accounts are reconciled in both environments from that
+          // environment's own configuration. The inventory must come from configuration (never a
+          // workflow input), the provisioning script must apply the Production scope guard, and
+          // the action must plan, provision, then validate.
+          const accountsStep = steps.find((step) => step.uses === './.github/actions/deploy-landing-zone-accounts');
+          const accountsInputs = Object.keys(accountsStep?.with ?? {}).sort().join(',');
+          const accountsAction = readFileSync('.github/actions/deploy-landing-zone-accounts/action.yml', 'utf8');
+          const accountsPhases = ['plan', 'apply', 'validate']
+            .map((phase) => accountsAction.indexOf('provision:landing-zone-accounts -- ' + phase));
+          if (accountsStep === undefined || accountsStep.if !== undefined ||
+              accountsStep.with?.['aws-environment'] !== '$' + '{{ inputs.aws-environment }}' ||
+              accountsInputs !== 'aws-environment,aws-region' ||
+              accountsPhases.some((index) => index < 0) ||
+              !(accountsPhases[0] < accountsPhases[1] && accountsPhases[1] < accountsPhases[2]) ||
+              !readFileSync('scripts/provision-landing-zone-accounts.ts', 'utf8').includes('assertLandingZoneAccountScope(')) {
+            failures.push('deploy-landing-zone-accounts must plan, provision, and validate a configuration-derived, scope-guarded inventory at runtime.');
+          }
+          if (steps.filter((step) => step.uses === './.github/actions/deploy-landing-zone-accounts').length !== 1) {
+            failures.push('validate-and-deploy.yml must invoke deploy-landing-zone-accounts exactly once.');
+          }
+
+          // AWS Control Tower OU enrollment: one step, run for staging and production only, after
+          // account provisioning, fed by the provisioning step's runtime account-ids and ou-ids and
+          // budgeted against the job timeout. Production reaches it only through the protected
+          // production job checked above. Inside the reusable action the FIRST step accepts only
+          // staging and production, and every credential acquisition reuses the approved
+          // aws-credentials action (no direct configure-aws-credentials, no hand-rolled OIDC).
+          const enrollSteps = steps.filter((step) => step.uses === './.github/actions/enroll-control-tower-accounts');
+          const enrollStep = enrollSteps[0];
+          const quote = String.fromCharCode(39);
+          const approvedEnvironments = '$' + '{{ inputs.aws-environment == ' + quote + 'staging' + quote +
+            ' || inputs.aws-environment == ' + quote + 'production' + quote + ' }}';
+          const accountsIndex = steps.findIndex((step) => step.uses === './.github/actions/deploy-landing-zone-accounts');
+          const enrollIndex = steps.findIndex((step) => step.uses === './.github/actions/enroll-control-tower-accounts');
+          if (enrollSteps.length !== 1 || enrollStep?.if !== approvedEnvironments || enrollIndex <= accountsIndex ||
+              enrollStep?.with?.environment !== '$' + '{{ inputs.aws-environment }}' ||
+              !String(enrollStep?.with?.['account-ids']).includes('steps.landing_zone_accounts.outputs.account-ids') ||
+              !String(enrollStep?.with?.['ou-ids']).includes('steps.landing_zone_accounts.outputs.ou-ids') ||
+              String(enrollStep?.with?.['job-timeout-minutes']) !== String(deploymentJob?.['timeout-minutes'])) {
+            failures.push('enroll-control-tower-accounts must run once, for staging and production only, after account provisioning, with the job timeout budget.');
+          }
+          const enrollAction = load('.github/actions/enroll-control-tower-accounts/action.yml').doc;
+          const enrollActionSteps = enrollAction?.runs?.steps ?? [];
+          const firstEnrollStep = enrollActionSteps[0];
+          if (!String(firstEnrollStep?.name).startsWith('Refuse unsupported environments') ||
+              !String(firstEnrollStep?.run).includes('staging|production)') ||
+              !/\*\)[\s\S]*exit 1/.test(String(firstEnrollStep?.run))) {
+            failures.push('enroll-control-tower-accounts must accept only staging and production as its first step.');
+          }
+          const reusableCredentials = 'ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main';
+          const enrollUses = enrollActionSteps.map((step) => step.uses).filter((uses) => uses !== undefined);
+          const enrollActionText = readFileSync('.github/actions/enroll-control-tower-accounts/action.yml', 'utf8');
+          if (enrollUses.length === 0 || enrollUses.some((uses) => uses !== reusableCredentials) ||
+              enrollActionText.includes(['configure', 'aws', 'credentials'].join('-')) ||
+              enrollActionText.includes(['assume', 'role', 'with', 'web', 'identity'].join('-'))) {
+            failures.push('enroll-control-tower-accounts must acquire every credential through the reusable aws-credentials action.');
+          }
+
+          // AWS Control Tower account auto-enrollment (enable only): one step, for staging and
+          // production only, after OU enrollment and its validation, fed the same runtime handoffs and
+          // the job timeout budget. Production reaches it only through the protected production job.
+          // Inside the action the FIRST step accepts only staging and production, every credential
+          // comes from the reusable aws-credentials action, and the read-only plan precedes any apply.
+          const autoSteps = steps.filter((step) => step.uses === './.github/actions/configure-control-tower-auto-enrollment');
+          const autoStep = autoSteps[0];
+          const autoIndex = steps.findIndex((step) => step.uses === './.github/actions/configure-control-tower-auto-enrollment');
+          if (autoSteps.length !== 1 || autoStep?.if !== approvedEnvironments || autoIndex <= enrollIndex ||
+              autoStep?.with?.environment !== '$' + '{{ inputs.aws-environment }}' ||
+              !String(autoStep?.with?.['landing-zone-arn']).includes('steps.control_tower.outputs.landing-zone-arn') ||
+              !String(autoStep?.with?.['account-ids']).includes('steps.landing_zone_accounts.outputs.account-ids') ||
+              !String(autoStep?.with?.['ou-ids']).includes('steps.landing_zone_accounts.outputs.ou-ids') ||
+              String(autoStep?.with?.['job-timeout-minutes']) !== String(deploymentJob?.['timeout-minutes'])) {
+            failures.push('configure-control-tower-auto-enrollment must run once, for staging and production only, after OU enrollment, with the job timeout budget.');
+          }
+          const autoAction = load('.github/actions/configure-control-tower-auto-enrollment/action.yml').doc;
+          const autoActionSteps = autoAction?.runs?.steps ?? [];
+          const firstAutoStep = autoActionSteps[0];
+          if (!String(firstAutoStep?.name).startsWith('Refuse unsupported environments') ||
+              !String(firstAutoStep?.run).includes('staging|production)') ||
+              !/\*\)[\s\S]*exit 1/.test(String(firstAutoStep?.run))) {
+            failures.push('configure-control-tower-auto-enrollment must accept only staging and production as its first step.');
+          }
+          const autoUses = autoActionSteps.map((step) => step.uses).filter((uses) => uses !== undefined);
+          const autoActionText = readFileSync('.github/actions/configure-control-tower-auto-enrollment/action.yml', 'utf8');
+          const autoScripts = autoActionSteps.map((step) => step.run ?? '');
+          const autoPlan = autoScripts.findIndex((run) => run.includes('--mode plan'));
+          const autoApply = autoScripts.findIndex((run) => run.includes('--mode apply'));
+          const autoVerify = autoScripts.findIndex((run) => run.includes('--mode verify'));
+          if (autoUses.length === 0 || autoUses.some((uses) => uses !== reusableCredentials) ||
+              autoActionText.includes(['configure', 'aws', 'credentials'].join('-')) ||
+              autoActionText.includes(['assume', 'role', 'with', 'web', 'identity'].join('-')) ||
+              autoPlan < 0 || autoApply <= autoPlan || autoVerify <= autoApply) {
+            failures.push('configure-control-tower-auto-enrollment must use the reusable aws-credentials action and run plan, apply, then verify.');
+          }
+
+          // Common Account Security Baseline v1.0: one step, for staging and production only, LAST, after
+          // auto-enrollment, fed the same runtime handoffs and the job timeout budget. Production reaches
+          // it only through the protected production job. No mandatory step may be bypassed: no
+          // continue-on-error in the job or the action, the FIRST action step accepts only staging and
+          // production, every credential comes from the reusable aws-credentials action, the read-only
+          // preflight precedes the apply rounds, and the read-only verification (acceptance gate) runs
+          // unless the run was cancelled and can never be skipped by an earlier step's outcome.
+          const baselineSteps = steps.filter((step) => step.uses === './.github/actions/reconcile-account-baseline');
+          const baselineStep = baselineSteps[0];
+          const baselineIndex = steps.findIndex((step) => step.uses === './.github/actions/reconcile-account-baseline');
+          if (baselineSteps.length !== 1 || baselineStep?.if !== approvedEnvironments || baselineIndex <= autoIndex ||
+              baselineIndex !== steps.length - 1 || baselineStep?.id !== 'account_baseline' ||
+              baselineStep?.with?.environment !== '$' + '{{ inputs.aws-environment }}' ||
+              !String(baselineStep?.with?.['landing-zone-arn']).includes('steps.control_tower.outputs.landing-zone-arn') ||
+              !String(baselineStep?.with?.['account-ids']).includes('steps.landing_zone_accounts.outputs.account-ids') ||
+              !String(baselineStep?.with?.['ou-ids']).includes('steps.landing_zone_accounts.outputs.ou-ids') ||
+              String(baselineStep?.with?.['job-timeout-minutes']) !== String(deploymentJob?.['timeout-minutes'])) {
+            failures.push('reconcile-account-baseline must run once, last, for staging and production only, after auto-enrollment, with the job timeout budget.');
+          }
+          if (steps.some((step) => 'continue-on-error' in step) || 'continue-on-error' in (deploymentJob ?? {})) {
+            failures.push('validate-and-deploy.yml must not use continue-on-error on any deployment or validation step.');
+          }
+          const baselineAction = load('.github/actions/reconcile-account-baseline/action.yml').doc;
+          const baselineActionSteps = baselineAction?.runs?.steps ?? [];
+          const baselineActionText = readFileSync('.github/actions/reconcile-account-baseline/action.yml', 'utf8');
+          const baselineScripts = baselineActionSteps.map((step) => step.run ?? '');
+          const baselinePlan = baselineScripts.findIndex((run) => run.includes('--phase plan'));
+          const baselineApplies = baselineScripts.flatMap((run, index) => (run.includes('--phase apply') ? [index] : []));
+          const baselineVerify = baselineScripts.findIndex((run) => run.includes('--phase verify'));
+          const verifyGuard = '$' + '{{ !cancelled() && steps.inputs.outcome == ' + quote + 'success' + quote + ' }}';
+          const baselineUses = baselineActionSteps.map((step) => step.uses).filter((uses) => uses !== undefined);
+          if (!String(baselineActionSteps[0]?.name).startsWith('Refuse unsupported environments') ||
+              !String(baselineActionSteps[0]?.run).includes('staging|production)') ||
+              !/\*\)[\s\S]*exit 1/.test(String(baselineActionSteps[0]?.run)) ||
+              baselineActionSteps.some((step) => 'continue-on-error' in step) ||
+              baselineUses.some((uses) => uses !== reusableCredentials && uses !== 'actions/upload-artifact@v4') ||
+              baselineActionText.includes(['configure', 'aws', 'credentials'].join('-')) ||
+              baselineActionText.includes(['assume', 'role', 'with', 'web', 'identity'].join('-')) ||
+              baselinePlan < 0 || baselineApplies.length !== 3 || baselineApplies[0] <= baselinePlan ||
+              baselineVerify <= baselineApplies[2] ||
+              baselineActionSteps[baselinePlan]?.if !== undefined || baselineActionSteps[baselineApplies[0]]?.if !== undefined ||
+              baselineActionSteps[baselineVerify]?.if !== verifyGuard ||
+              baselineActionSteps[baselineVerify - 1]?.uses !== reusableCredentials ||
+              baselineActionSteps[baselineVerify - 1]?.if !== verifyGuard ||
+              baselineActionSteps[baselineVerify]?.id !== 'verify' ||
+              !String(baselineAction?.outputs?.acceptance?.value).includes('steps.verify.outputs.acceptance')) {
+            failures.push('reconcile-account-baseline must refuse other environments first, use the reusable credentials action, run preflight, three guarded apply rounds and an unskippable verification, and never continue on error.');
+          }
+
+          // CI stays AWS-credential-free: no Control Tower enrollment or auto-enrollment entry point,
+          // Control Tower baseline API or Landing Zone write API may appear in ci.yml. Built
+          // dynamically so this guard never matches itself.
+          const ciText = readFileSync('.github/workflows/ci.yml', 'utf8');
+          const forbiddenInCi = [
+            ['enroll', 'control-tower-accounts'].join(':'),
+            ['validate', 'control-tower-enrollment'].join(':'),
+            ['configure', 'control-tower-auto-enrollment'].join(':'),
+            ['reconcile', 'account-baseline'].join(':'),
+            ['enable', 'baseline'].join('-'),
+            ['reset', 'enabled-baseline'].join('-'),
+            ['list', 'baselines'].join('-'),
+            ['list', 'enabled-baselines'].join('-'),
+            ['update', 'landing-zone'].join('-'),
+            ['reset', 'landing-zone'].join('-'),
+            ['list', 'landing-zone-operations'].join('-')
+          ];
+          for (const forbidden of forbiddenInCi) {
+            if (ciText.includes(forbidden)) {
+              failures.push('ci.yml must not run the AWS-backed Control Tower enrollment (' + forbidden + ').');
+            }
+          }
+
+          if (failures.length > 0) {
+            for (const failure of failures) console.error('::error::' + failure);
+            process.exit(1);
+          }
+          console.log('Deployment-authority checks passed.');
+          "
+
+      # -------------------------------------------------------------------------------------
+      # Secrets / credential scan.
+      # TODO: replace with the centrally approved secret-scanning composite action once its
+      # interface is confirmed in ccoe-aws/reusable-workflows. The inline scan below is a
+      # self-contained baseline and is intentionally conservative.
+      # -------------------------------------------------------------------------------------
+      - name: Secrets and hardcoded-identifier scan
+        run: |
+          set -euo pipefail
+          SCAN_PATHS="bin lib config scripts tests package.json cdk.json README.md"
+          fail=0
+
+          scan() {
+            local label="$1"
+            local pattern="$2"
+            if grep -rInE "$pattern" $SCAN_PATHS; then
+              echo "::error::$label detected in source."
+              fail=1
+            fi
+          }
+
+          scan "AWS access key ID" '(AKIA|ASIA)[0-9A-Z]{16}'
+          scan "AWS secret access key assignment" 'aws_secret_access_key[[:space:]]*[:=]'
+          scan "Private key block" 'BEGIN [A-Z ]*PRIVATE KEY'
+          scan "GitHub token" '(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})'
+
+          # AWS account IDs are AWS identifiers (not secrets) and are declared in config/*.yaml
+          # under aws.accountId - excluded from this scan. Tests inline the same identifier as
+          # fixtures. Any 12-digit sequence found in code paths (bin/, lib/, scripts/) is still
+          # a defect.
+          ACCOUNT_ID_SCAN_PATHS="bin lib scripts package.json cdk.json README.md"
+          if grep -rInE '(^|[^0-9A-Za-z_.-])[0-9]{12}([^0-9A-Za-z_.-]|$)' $ACCOUNT_ID_SCAN_PATHS; then
+            echo "::error::Hardcoded 12-digit AWS account ID detected in code. Account IDs must come from config/*.yaml via ccoe-config-reader."
+            fail=1
+          fi
+
+          # A real Organizations Root ID must never be committed. Documentation placeholders
+          # (r-a1b2 / r-abcd) are the only permitted occurrences.
+          if grep -rInE '(^|[^0-9A-Za-z])r-[0-9a-z]{4,32}([^0-9a-z]|$)' $SCAN_PATHS \
+               | grep -vE 'r-(a1b2|abcd1234|abcd)([^0-9a-z]|$)'; then
+            echo "::error::Possible hardcoded AWS Organizations Root ID detected in source."
+            fail=1
+          fi
+
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+          echo "Secrets and hardcoded-identifier scan passed."
+
+      - name: Summary
+        run: |
+          {
+            echo "### AWS ESC Landing Zone CI"
+            echo ""
+            echo "- Scope: OU hierarchy, IAM Identity Center and SCIM, SCP/RCP policies, Audit/Log Archive shared accounts, Control Tower prerequisites and Landing Zone 4.0 manifest, and the remaining Landing Zone accounts"
+            echo "- Partition / Region: aws-eusc / eusc-de-east-1"
+            echo "- Expected OUs: 14 (5 L1 + 3 L2 + 6 L3)"
+            echo "- Expected AWS::Organizations::Policy resources in lz-ou-structure: 0"
+            echo "- Expected AWS::Organizations::Policy resources in lz-organization-policies: 21 (19 SCPs + 2 RCPs)"
+            echo "- Expected AWS::Organizations::Account resources in lz-ou-structure: 0"
+            echo "- Expected AWS::Organizations::Account resources in lz-organization-policies: 0"
+            echo "- Expected AWS::Organizations::Account resources in lz-shared-accounts: 2 (Audit, Log Archive; DeletionPolicy: Retain)"
+            echo "- Remaining Landing Zone accounts: reconciled at runtime by deploy-landing-zone-accounts; Staging: 8 (SharedServices, Network, 6 CCoE Verification); Production: 2 (SharedServices, Network)"
+            echo "- Common Account Security Baseline v1.0: 5 enable-only controls; expected results Staging 40 (8 x 5), Production 10 (2 x 5); applied at runtime by reconcile-account-baseline, never by CI"
+            echo "- Expected IAM Identity Center Permission Sets: 10"
+            echo "- Expected IAM Identity Center account assignments: 0"
+            echo "- Expected account-level policy attachments: 0 (deferred)"
+            echo "- Deployment performed: none (CI never deploys or bootstraps)"
+          } >> "$GITHUB_STEP_SUMMARY"

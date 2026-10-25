@@ -1,0 +1,15 @@
+# pnpm settings for aws-sc-landing-zone.
+#
+# This repository is a single flat CDK package (see CLAUDE.md section 15), so no `packages:` globs
+# are declared. The file exists because pnpm 11 reads workspace-level settings from here.
+#
+# `allowBuilds` explicitly approves the dependency build scripts this project needs, mirroring the
+# same setting in aws-sc-foundation. Everything else stays blocked by default.
+allowBuilds:
+  esbuild: true
+
+# Trusted CCOE package published within the minimumReleaseAge window. Allowlist the
+# specific version so the supply-chain policy accepts the lockfile entry. Same
+# pattern as aws-sc-foundation's pnpm-workspace.yaml.
+minimumReleaseAgeExclude:
+  - '@ccoe-aws_if-it/ccoe-config-reader@1.2.1'

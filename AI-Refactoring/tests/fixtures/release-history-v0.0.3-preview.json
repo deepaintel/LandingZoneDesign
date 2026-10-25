@@ -1,0 +1,382 @@
+{
+  "schemaVersion": 1,
+  "releaseTag": "release-v0.0.3",
+  "commitSha": "da9fef6ad0aa3f841e18ddce937606c57613f410",
+  "tags": [
+    {
+      "name": "release-v0.0.1",
+      "createdAt": 1790774288,
+      "commit": "1d9c70dfa40f088c16fbe924fc0b86f55f9f4817"
+    },
+    {
+      "name": "release-v0.0.2",
+      "createdAt": 1791877731,
+      "commit": "997b4541329a554eda9beb7cd21d735c9b3159f7"
+    }
+  ],
+  "previousTag": "release-v0.0.2",
+  "range": [
+    {
+      "sha": "da9fef6ad0aa3f841e18ddce937606c57613f410",
+      "parents": ["69bafe692e865700d74924e738f3eedc0c156980"],
+      "subject": "Control Tower SCP Compatibility and OU enrollment (#87)",
+      "cherryPickedFrom": [],
+      "patchId": "76b54c4b27c08ce13182ebb5515018554b4198f8"
+    },
+    {
+      "sha": "69bafe692e865700d74924e738f3eedc0c156980",
+      "parents": ["5d9a238659319f94f6b85762ae307eb4d2cfb28b"],
+      "subject": "Implement Idempotent account provisioning (#85)",
+      "cherryPickedFrom": [],
+      "patchId": "7ff287473abed4b5dee9bbc5b71d739533688bd0"
+    }
+  ],
+  "unreachable": {
+    "release-v0.0.2": ["da9fef6ad0aa3f841e18ddce937606c57613f410", "69bafe692e865700d74924e738f3eedc0c156980"],
+    "release-v0.0.1": [
+      "da9fef6ad0aa3f841e18ddce937606c57613f410",
+      "69bafe692e865700d74924e738f3eedc0c156980",
+      "5d9a238659319f94f6b85762ae307eb4d2cfb28b",
+      "8051f167f100cd102f2977e7dd4449a694862eac",
+      "9abd39483ae6891320e7647fc74098cccf29fa01",
+      "83e20e37cf11b20a56479efdc108babf415278d1",
+      "51de115f9642c58f93ddfcf84a74b02158add0a7",
+      "42899a70641a7faf7808bf8283627c0aefecea96",
+      "887e2906992b0d6cc47df22dcfa61faa5d829dab",
+      "6cb2c628ebbcfc812b72e893288d85ef9e5faec8",
+      "be87e899a0ef8365fd852101c4be4cb6d276f2cb",
+      "d431a5b0b6e6eafd1394fe89501047c20ab2001a",
+      "57092d2e41b7d1f3e6cd46bc9bf30445b2627bb4",
+      "6ead26f4e69ba3465a93569de92bcf5d48f27874",
+      "121c7e8dfe75261a01cd5f8e3881d9e823ccf2dc",
+      "df5fb1c6f4119da6f1b16206f53660eac8218146",
+      "b3c3ce9445888ae8c7515bf8937e0c430ece8ee9",
+      "b7e8c06a0101619407afbf0ab38a22d5a89dbc76",
+      "fceccc7420b92c0cd7b3a6c8613107e6b91f3ed1",
+      "c13c0bf78731ecc1a6ae530224c6d4b670f0d689",
+      "306e87d8c699a4083e9500dee12c3ee4fd3e6e13",
+      "7f71609167c0561114122feba0a8ac8a85a881e4",
+      "0cce76aea4512ab0e541fa96101e206428320827",
+      "83133f9d80b4583f6763d98bbe8bc07abb78d158",
+      "a0d1f5c61cde826958c048eb8e5ea0a8564c94f3",
+      "7d113d405985ba379fd40b1d48e8c54b66b47c60",
+      "512b6d99d86ec4f1a795e248fdd8d57dfd31a66b",
+      "060eeadb2053675126a0fcf001804167d81afdd3",
+      "b2bec7f52e0164a2da3307aeeb822ddd001d77ff",
+      "e7020fc01c1bff782e68397c52442bcf45800ea8",
+      "697e0ad4dd5938e7faae616e934047d85f225eac",
+      "c953c88a473ab604d6a896aadb9bd8a55c1bbdb9",
+      "68e2ac996be60286a855bb48efde4597932bb105",
+      "8b2248d3f8a0a3fc33514be7370ba2ea2941526f",
+      "f1df8635770395947083f81114ba46a9d74c0c3f",
+      "cdf4b4807b8f31f90ea6efd9e625e2ed61e1e424",
+      "b64fd9ff94f120af7d6f2df4ad217d0f97635100",
+      "48418fc57686adfdd7cfcd3305e662319477f9c7",
+      "859f526e6affecd97941e53cb38574f4de3f197f",
+      "1bc65eb1fcb84e029b6e3e5d23d073c6aed14ddc",
+      "11e8579ca9507a7ccd29015247549a9cf1c8df65",
+      "35c5144cdcc2e82ce42d98874a8ade2e43d5f76b",
+      "d4286f06c24833d07c613c16b13f97621d4abf04",
+      "c0419ba9257e694636a0078201947a2d6051d1bd",
+      "68c34c606b4caef52bfac4410c97fe5037588a42",
+      "da621727f1b0aa9482236c9948b1cf363ab98803"
+    ]
+  },
+  "released": [
+    {
+      "sha": "997b4541329a554eda9beb7cd21d735c9b3159f7",
+      "parents": ["5d9a238659319f94f6b85762ae307eb4d2cfb28b"],
+      "subject": "Implement Idempotent account provisioning (#85) (#86)",
+      "cherryPickedFrom": [],
+      "patchId": "7ff287473abed4b5dee9bbc5b71d739533688bd0",
+      "releaseTags": ["release-v0.0.2"]
+    },
+    {
+      "sha": "1d9c70dfa40f088c16fbe924fc0b86f55f9f4817",
+      "parents": ["95f1aa74e5fbbcb9d439e1a04cff1e9e90601ef1"],
+      "subject": "Combined deployment workflow (#80) (#81)",
+      "cherryPickedFrom": [],
+      "patchId": "dfffffdb312f2f9c95543ebc159e6ae5e06e270e",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "95f1aa74e5fbbcb9d439e1a04cff1e9e90601ef1",
+      "parents": ["28d6937f101fc12f7c1921a567ef8330ce020dcc"],
+      "subject": "Downgrade CT logging-bucket discovery to WARN/SKIP; add diagnostics (#76) (#77)",
+      "cherryPickedFrom": [],
+      "patchId": "2a1dfa66b487ed5fe6d605d1b8819cd8de0199a6",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "28d6937f101fc12f7c1921a567ef8330ce020dcc",
+      "parents": ["4f0e907c0409458f504cc856a93b42b604c8e0ba"],
+      "subject": "Fix AWSControlTowerCloudTrailRole configuration for CreateLandingZone validation (#74) (#75)",
+      "cherryPickedFrom": [],
+      "patchId": "5cdd831d71e64a8cbf40811997228fe36c121a4d",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "4f0e907c0409458f504cc856a93b42b604c8e0ba",
+      "parents": ["eb694f5c8d6d4656feb9ea1eeecdd91aec95267d"],
+      "subject": "Implement AWS Control Tower API prerequisites for Landing Zone initialization (#70) (#73)",
+      "cherryPickedFrom": [],
+      "patchId": "c41f0e2f382c580c8ee70cf6d1f9bb73b3183751",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "eb694f5c8d6d4656feb9ea1eeecdd91aec95267d",
+      "parents": ["8e268248fc96d34a757db2cce4a2350f9f24a80c"],
+      "subject": "feat: enhance SCIM synchronization and organizational unit management (#71) (#72)",
+      "cherryPickedFrom": [],
+      "patchId": "753bb78cf4beabef9a3b25831533d5e4e6279f54",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "8e268248fc96d34a757db2cce4a2350f9f24a80c",
+      "parents": ["b6237cbd52ea379bb9d06ff0eda03d1f3118646f"],
+      "subject": "Fix: Use correct AWS CLI service name 'configservice' instead of 'config' (#66) (#67)",
+      "cherryPickedFrom": [],
+      "patchId": "b77e6af20b27b96fdbbbb7c1381e58e41bb3a928",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "b6237cbd52ea379bb9d06ff0eda03d1f3118646f",
+      "parents": ["2ae70f8caa63b0fd6f3752b244286d283c862498"],
+      "subject": "Use OrganizationAccountAccessRole to assume into new member accounts (#64) (#65)",
+      "cherryPickedFrom": [],
+      "patchId": "f28ca5e901e37fc58385a29ca8f54988b8114a76",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "2ae70f8caa63b0fd6f3752b244286d283c862498",
+      "parents": ["36bfca16716948bbbb58f06d48270fd8a6628b92"],
+      "subject": "feat: implement SCIM cleanup (#56) (#57)",
+      "cherryPickedFrom": [],
+      "patchId": "df89954faa125c7f60b62c7fd0fcea6654bfb3ee",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "36bfca16716948bbbb58f06d48270fd8a6628b92",
+      "parents": ["1c5c5ccb73f0a6b9b77181e95513aea1bdfbab27"],
+      "subject": "Make create-inspection-role.sh executable (#62) (#63)",
+      "cherryPickedFrom": [],
+      "patchId": "854c1ec249d82bbde9196e2eb7d55d77693a5e0c",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "1c5c5ccb73f0a6b9b77181e95513aea1bdfbab27",
+      "parents": ["430fc592f9bf468bc88b1a66b4bdf5cce7e667ba"],
+      "subject": "Control Tower execution role exemption for KMS tagging operations during initialization (#60) (#61)",
+      "cherryPickedFrom": [],
+      "patchId": "a75f18286c8fa16afd29367c6d302e096eedf363",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "430fc592f9bf468bc88b1a66b4bdf5cce7e667ba",
+      "parents": ["4502f1dcef0e2b82b99c5db0247e0c8c4bcc4ff8"],
+      "subject": "Fix AWS ESC partitions API limitation with assumed-role ARNs (#58) (#59)",
+      "cherryPickedFrom": [],
+      "patchId": "f0a6c4ff98d9f1a17c002584f0abcf8306e1a9e4",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "4502f1dcef0e2b82b99c5db0247e0c8c4bcc4ff8",
+      "parents": ["34841cf21afd04a5be1fb4fbc7e6739780602ffd"],
+      "subject": "Deploy Control Tower initialization in Staging environment (#55)",
+      "cherryPickedFrom": [],
+      "patchId": "c7abb2e031c049e824306208bce37ac9bd3ed574",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "34841cf21afd04a5be1fb4fbc7e6739780602ffd",
+      "parents": ["cd1c9dbbbe736da7862de065c73f157a1d7d1980"],
+      "subject": "feat: update input schema to include optional assignmentStatus for account assignment handling (#53) (#54)",
+      "cherryPickedFrom": [],
+      "patchId": "d3aaad55f74dcc0a60398b8ec4eb164e6e071ef8",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "cd1c9dbbbe736da7862de065c73f157a1d7d1980",
+      "parents": ["f766cf39eaac80cda1224702fb2208c31a517267"],
+      "subject": "feat: add retry logic for account assignment task on ConflictException (#51) (#52)",
+      "cherryPickedFrom": [],
+      "patchId": "1a9b2ef220c119537f7f068ca55a712a44bd37b0",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "f766cf39eaac80cda1224702fb2208c31a517267",
+      "parents": ["4424cc680b26a17daf431e1a76076b383863111a"],
+      "subject": "feat: add IAM permissions for SAML provider management in SCIM sync stack (#49) (#50)",
+      "cherryPickedFrom": [],
+      "patchId": "7cec08fb3219d7ffdd2c1ba7945481702dae911f",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "4424cc680b26a17daf431e1a76076b383863111a",
+      "parents": ["f33d49ca6c5063b0b165967287dd0e488533ede0"],
+      "subject": "feat: add IAM permissions for management account role assignments in SCIM sync stack (#47) (#48)",
+      "cherryPickedFrom": [],
+      "patchId": "c200fb2f4a67a64934ac12f8e85a5491f1e221df",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "f33d49ca6c5063b0b165967287dd0e488533ede0",
+      "parents": ["17e10b11fa370bbce014ebee0b62420cc3f258a1"],
+      "subject": "feat: enhance account assignment status handling with failure reasons (#45) (#46)",
+      "cherryPickedFrom": [],
+      "patchId": "112ce08f67c32d7ed51d9c9e99a461fbf796d643",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "17e10b11fa370bbce014ebee0b62420cc3f258a1",
+      "parents": ["6e15931dbe2524fafab272ec5c1715aaed067cc0"],
+      "subject": "feat: add require shim for ESM output in common lambda props (#44)",
+      "cherryPickedFrom": [],
+      "patchId": "ac82627ed02722023f5715e4722d88f80b1c0007",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "6e15931dbe2524fafab272ec5c1715aaed067cc0",
+      "parents": ["eb7ecfdddee869d3dc3043c509ec7397f0edde9d"],
+      "subject": "feat: add SCIM synchronization stack to deployment workflows (#42) (#43)",
+      "cherryPickedFrom": [],
+      "patchId": "12d97b4f50d6466faa0e6e7b2d615c16393a5171",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "eb7ecfdddee869d3dc3043c509ec7397f0edde9d",
+      "parents": ["6a62250f0e0d48b32e65ff1163353b2f2955846e"],
+      "subject": "Backport - Scim Sync (#41)",
+      "cherryPickedFrom": [],
+      "patchId": "0d4cf53ff62ef40cb122474c842c259ce90cb3b6",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "6a62250f0e0d48b32e65ff1163353b2f2955846e",
+      "parents": ["6e085163332e7a47fa1fac2b405be01f9d8289be"],
+      "subject": "Isolate SCP schema from Organizational Schema (#35)",
+      "cherryPickedFrom": [],
+      "patchId": "4fbe45055db9b7f5e9252cdb7a8aa24fdc625754",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "6e085163332e7a47fa1fac2b405be01f9d8289be",
+      "parents": ["5a4c1119642458670d530abb0492bdb47c5b665c"],
+      "subject": "Implement Control Tower SCP compatibility (#31) (#32)",
+      "cherryPickedFrom": [],
+      "patchId": "fb977e00db3275528f7824e0556a555ab6445f63",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "5a4c1119642458670d530abb0492bdb47c5b665c",
+      "parents": ["b363b9edac3d414214151aa9c6da5ffedad59cd6"],
+      "subject": "Add CDK Provisioning for Audit and Log Archive Accounts (#18) (#30)",
+      "cherryPickedFrom": [],
+      "patchId": "1a8320cfb8b1dd4b003ff58420c72ab61e6c9e68",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "b363b9edac3d414214151aa9c6da5ffedad59cd6",
+      "parents": ["0a5b5e9d367f1c3add0e0ac32c50d603f08024dd"],
+      "subject": "Remove reconcile step from deploy-identity-center action and refactor account assignment command for clarity (#27) (#29)",
+      "cherryPickedFrom": [],
+      "patchId": "cf071468cddcb143bf890796503f701376aeaf43",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "0a5b5e9d367f1c3add0e0ac32c50d603f08024dd",
+      "parents": ["d99a8a893e89c459e81c6d171774f172dce2c068"],
+      "subject": "Update managed policy reference for NetworkAdmin permission set and adjust regex pattern for policy names (#24) (#25)",
+      "cherryPickedFrom": [],
+      "patchId": "fa675eec09e7f4ddc5eba0d8b0f951cd36d42c6b",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "d99a8a893e89c459e81c6d171774f172dce2c068",
+      "parents": ["f4da376e4d50dad320913c42c72cf68489839375"],
+      "subject": "Fix IAM Identity Center instance lookup and update README with deployment prerequisites (#22) (#23)",
+      "cherryPickedFrom": [],
+      "patchId": "3d0dd0d347c2132e5995a38fdfe369a053b55bbc",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "f4da376e4d50dad320913c42c72cf68489839375",
+      "parents": ["92c0dfd096403b2cf308b5fab6e5d40790ffc352"],
+      "subject": "Redesign IAM Identity Center discovery process and remove instance stack (#20) (#21)",
+      "cherryPickedFrom": [],
+      "patchId": "b4138dcb25781939d1e802b63db5772ff1121ac6",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "92c0dfd096403b2cf308b5fab6e5d40790ffc352",
+      "parents": ["ed2a7edeecddbad2868b71ad1868ce234c1308d3"],
+      "subject": "Add AWS IAM Identity Center (#9) (#19)",
+      "cherryPickedFrom": [],
+      "patchId": "3139f7b80208a63fa0b5b675ca339c301d58bdf6",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "ed2a7edeecddbad2868b71ad1868ce234c1308d3",
+      "parents": ["55ec2ca26ddf43be355eeb930cacc12ba67fd011"],
+      "subject": "Resolved JMESPath query (#16) (#17)",
+      "cherryPickedFrom": [],
+      "patchId": "a676726393a98ac30854840b68df1311dd1dc69c",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "55ec2ca26ddf43be355eeb930cacc12ba67fd011",
+      "parents": ["6237bb9498879309cd14942998d10e9c0a21ed25"],
+      "subject": "Enable SCP policy type for AWS organization",
+      "cherryPickedFrom": [],
+      "patchId": "ed1a28601c86ae169e330ea644a69e4c9d8c8950",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "6237bb9498879309cd14942998d10e9c0a21ed25",
+      "parents": ["b0a07b27386817cc2f246239dcfeafa55178eb1e"],
+      "subject": "Remove Cloud Formation Export/Import dependency (#12) (#13)",
+      "cherryPickedFrom": [],
+      "patchId": "2882ae9a3a39c76697b3f9f581d9f6294c2c9609",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "b0a07b27386817cc2f246239dcfeafa55178eb1e",
+      "parents": ["59f49288acdd93da4a5daa9e63ec4143d2db93aa", "b7928063753967cef3c86b917262bba8500605f7"],
+      "subject": "Merge pull request #10 from ccoe-aws/backport/lz-v0.0.1-scp-deployment",
+      "cherryPickedFrom": [],
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "b7928063753967cef3c86b917262bba8500605f7",
+      "parents": ["e5ab8403b026569c215a5e2133ac55a7f70132dc"],
+      "subject": "feature/scp creation (#4)",
+      "cherryPickedFrom": [],
+      "patchId": "f1d6b97fa1f7f908e62f61dc231d53a0b8ebcbeb",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "e5ab8403b026569c215a5e2133ac55a7f70132dc",
+      "parents": ["59f49288acdd93da4a5daa9e63ec4143d2db93aa"],
+      "subject": "feat: Add initial implementation of Microsoft APM for AWS ESC Landing Zone (#8)",
+      "cherryPickedFrom": [],
+      "patchId": "b84cc633f0c9a1be47dd545ec56503a1f95419da",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "59f49288acdd93da4a5daa9e63ec4143d2db93aa",
+      "parents": ["5a4f25e2a37dab95043db88270b9a5e4f291872a"],
+      "subject": "account id fix in missed deployment part of staging-deploy via ccoe-config-reader library API (#6) (#7)",
+      "cherryPickedFrom": [],
+      "patchId": "2b2424c28463236d827c3c576820ac6daf5b7a1d",
+      "releaseTags": ["release-v0.0.1"]
+    },
+    {
+      "sha": "5a4f25e2a37dab95043db88270b9a5e4f291872a",
+      "parents": ["a8159bde8e2cafe0ee2f8a933f78027191cf8cb7"],
+      "subject": "Fix aws.accountId via ccoe-config-reader library API (#3) (#5)",
+      "cherryPickedFrom": [],
+      "patchId": "394181a52b0070a02fea153e9cdbeb1a3370fdc2",
+      "releaseTags": ["release-v0.0.1"]
+    }
+  ]
+}

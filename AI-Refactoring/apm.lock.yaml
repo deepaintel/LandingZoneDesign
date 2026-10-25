@@ -1,0 +1,607 @@
+lockfile_version: '1'
+generated_at: '2026-09-17T10:58:40.348125+00:00'
+dependencies: []
+deployments:
+- kind: project-relative
+  target: agents
+  value: .agents/skills/aws-lambda-implementation
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/aws-lambda-implementation/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:96c8423556aa21626cbb4db11e6134be8ff10cf65a052be62a10f3af37e0fc7e
+- kind: project-relative
+  target: agents
+  value: .agents/skills/common-account-baseline
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/common-account-baseline/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:daf3859c83c62808e547ca9590ec5ddc5f8cda313d6a5df93e7567e3f327a30b
+- kind: project-relative
+  target: agents
+  value: .agents/skills/control-tower-account-enrollment
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/control-tower-account-enrollment/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:7e174c41ffd81645e15bc9716f95aac973424134f8ff4383f784d0173207bfd8
+- kind: project-relative
+  target: agents
+  value: .agents/skills/control-tower-auto-enrollment
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/control-tower-auto-enrollment/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:852ee383cb048e6193b60bd10dc41922ecc34ab364df93d8f4f881aa3cd6dacf
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-account
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-account/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:0a348beeb14fdad3e6612e59c331f69fd932c4c033a660bc2c1e637fd85c8e4f
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-identity-center
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-identity-center/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:6b1e4f0e6e0114916a07038b69ad0fe37f7bb422d3304c712b90c246a3c92d57
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-ou
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-landing-zone-ou/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:c757d0a3077cb34e75f6f877a7df497fc807416351ec23935c7b6edcfffa997a
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-scp
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/generate-scp/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:a773b345d76f6de71232614c09babc0c77f113dfbcd3185f0f1b8b2fd38abfd5
+- kind: project-relative
+  target: agents
+  value: .agents/skills/initialize-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/initialize-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:27dfef9c3c95f46a48fa8279a8f9489c75b4cb3cdc15fbecb90fd313cc18c24a
+- kind: project-relative
+  target: agents
+  value: .agents/skills/manage-apm-customization
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/manage-apm-customization/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:34d42fa41ad67d7debac12e981e6f731f043362a373c8b634c31dad581dfbfcd
+- kind: project-relative
+  target: agents
+  value: .agents/skills/manage-landing-zone-configuration
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/manage-landing-zone-configuration/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:d4d4e27f214e45c6987e5cde01f4e16f2f2d2723f8aca854f21c994e61e2cc83
+- kind: project-relative
+  target: agents
+  value: .agents/skills/manage-landing-zone-release-workflows
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/manage-landing-zone-release-workflows/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:f868967b67ebbb82ae162981347cda0c50a7628f6e135d392568fc2e1255466f
+- kind: project-relative
+  target: agents
+  value: .agents/skills/update-scp-for-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: agents
+  value: .agents/skills/update-scp-for-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:ecc7581c9ae06b97799a24b08eb5539d5dbf308512d185ca9ec805ef3ec0bae9
+- kind: project-relative
+  target: claude
+  value: .claude/rules/landing-zone-global.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:17db66085cc09579a92dd90f6b0e4a8312fc3d377bc7a2546fdcdadf6bb17c07
+- kind: project-relative
+  target: claude
+  value: .claude/skills/aws-lambda-implementation
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/aws-lambda-implementation/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:96c8423556aa21626cbb4db11e6134be8ff10cf65a052be62a10f3af37e0fc7e
+- kind: project-relative
+  target: claude
+  value: .claude/skills/common-account-baseline
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/common-account-baseline/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:daf3859c83c62808e547ca9590ec5ddc5f8cda313d6a5df93e7567e3f327a30b
+- kind: project-relative
+  target: claude
+  value: .claude/skills/control-tower-account-enrollment
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/control-tower-account-enrollment/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:7e174c41ffd81645e15bc9716f95aac973424134f8ff4383f784d0173207bfd8
+- kind: project-relative
+  target: claude
+  value: .claude/skills/control-tower-auto-enrollment
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/control-tower-auto-enrollment/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:852ee383cb048e6193b60bd10dc41922ecc34ab364df93d8f4f881aa3cd6dacf
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-account
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-account/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:0a348beeb14fdad3e6612e59c331f69fd932c4c033a660bc2c1e637fd85c8e4f
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-identity-center
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-identity-center/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:6b1e4f0e6e0114916a07038b69ad0fe37f7bb422d3304c712b90c246a3c92d57
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-ou
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-landing-zone-ou/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:c757d0a3077cb34e75f6f877a7df497fc807416351ec23935c7b6edcfffa997a
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-scp
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/generate-scp/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:a773b345d76f6de71232614c09babc0c77f113dfbcd3185f0f1b8b2fd38abfd5
+- kind: project-relative
+  target: claude
+  value: .claude/skills/initialize-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/initialize-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:27dfef9c3c95f46a48fa8279a8f9489c75b4cb3cdc15fbecb90fd313cc18c24a
+- kind: project-relative
+  target: claude
+  value: .claude/skills/manage-apm-customization
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/manage-apm-customization/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:34d42fa41ad67d7debac12e981e6f731f043362a373c8b634c31dad581dfbfcd
+- kind: project-relative
+  target: claude
+  value: .claude/skills/manage-landing-zone-configuration
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/manage-landing-zone-configuration/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:d4d4e27f214e45c6987e5cde01f4e16f2f2d2723f8aca854f21c994e61e2cc83
+- kind: project-relative
+  target: claude
+  value: .claude/skills/manage-landing-zone-release-workflows
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/manage-landing-zone-release-workflows/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:f868967b67ebbb82ae162981347cda0c50a7628f6e135d392568fc2e1255466f
+- kind: project-relative
+  target: claude
+  value: .claude/skills/update-scp-for-control-tower
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: project-relative
+  target: claude
+  value: .claude/skills/update-scp-for-control-tower/SKILL.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:ecc7581c9ae06b97799a24b08eb5539d5dbf308512d185ca9ec805ef3ec0bae9
+- kind: project-relative
+  target: copilot
+  value: .github/instructions/landing-zone-global.instructions.md
+  runtime: null
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: sha256:5213c7da2f94f69baf0e55149d5b29aa1b603a4131fe3a26b8a2edd6d8cc3901
+- kind: uri
+  target: mcp
+  value: github-if-it
+  runtime: claude
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+- kind: uri
+  target: mcp
+  value: github-if-it
+  runtime: vscode
+  scope: project
+  owners:
+  - .
+  active_owner: .
+  content_hash: null
+mcp_servers:
+- github-if-it
+mcp_configs:
+  github-if-it:
+    name: github-if-it
+    transport: http
+    registry: false
+    headers:
+      Authorization: Bearer ${GITHUB_COPILOT_PAT}
+    url: https://copilot-api.if-it.ghe.com/mcp
+mcp_target_servers:
+  claude:
+  - github-if-it
+  vscode:
+  - github-if-it
+local_deployed_files:
+- .agents/skills/aws-lambda-implementation
+- .agents/skills/aws-lambda-implementation/SKILL.md
+- .agents/skills/common-account-baseline
+- .agents/skills/common-account-baseline/SKILL.md
+- .agents/skills/control-tower-account-enrollment
+- .agents/skills/control-tower-account-enrollment/SKILL.md
+- .agents/skills/control-tower-auto-enrollment
+- .agents/skills/control-tower-auto-enrollment/SKILL.md
+- .agents/skills/generate-account
+- .agents/skills/generate-account/SKILL.md
+- .agents/skills/generate-landing-zone-identity-center
+- .agents/skills/generate-landing-zone-identity-center/SKILL.md
+- .agents/skills/generate-landing-zone-ou
+- .agents/skills/generate-landing-zone-ou/SKILL.md
+- .agents/skills/generate-scp
+- .agents/skills/generate-scp/SKILL.md
+- .agents/skills/initialize-control-tower
+- .agents/skills/initialize-control-tower/SKILL.md
+- .agents/skills/manage-apm-customization
+- .agents/skills/manage-apm-customization/SKILL.md
+- .agents/skills/manage-landing-zone-configuration
+- .agents/skills/manage-landing-zone-configuration/SKILL.md
+- .agents/skills/manage-landing-zone-release-workflows
+- .agents/skills/manage-landing-zone-release-workflows/SKILL.md
+- .agents/skills/update-scp-for-control-tower
+- .agents/skills/update-scp-for-control-tower/SKILL.md
+- .claude/rules/landing-zone-global.md
+- .claude/skills/aws-lambda-implementation
+- .claude/skills/aws-lambda-implementation/SKILL.md
+- .claude/skills/common-account-baseline
+- .claude/skills/common-account-baseline/SKILL.md
+- .claude/skills/control-tower-account-enrollment
+- .claude/skills/control-tower-account-enrollment/SKILL.md
+- .claude/skills/control-tower-auto-enrollment
+- .claude/skills/control-tower-auto-enrollment/SKILL.md
+- .claude/skills/generate-account
+- .claude/skills/generate-account/SKILL.md
+- .claude/skills/generate-landing-zone-identity-center
+- .claude/skills/generate-landing-zone-identity-center/SKILL.md
+- .claude/skills/generate-landing-zone-ou
+- .claude/skills/generate-landing-zone-ou/SKILL.md
+- .claude/skills/generate-scp
+- .claude/skills/generate-scp/SKILL.md
+- .claude/skills/initialize-control-tower
+- .claude/skills/initialize-control-tower/SKILL.md
+- .claude/skills/manage-apm-customization
+- .claude/skills/manage-apm-customization/SKILL.md
+- .claude/skills/manage-landing-zone-configuration
+- .claude/skills/manage-landing-zone-configuration/SKILL.md
+- .claude/skills/manage-landing-zone-release-workflows
+- .claude/skills/manage-landing-zone-release-workflows/SKILL.md
+- .claude/skills/update-scp-for-control-tower
+- .claude/skills/update-scp-for-control-tower/SKILL.md
+- .github/instructions/landing-zone-global.instructions.md
+local_deployed_file_hashes:
+  .agents/skills/aws-lambda-implementation/SKILL.md: sha256:96c8423556aa21626cbb4db11e6134be8ff10cf65a052be62a10f3af37e0fc7e
+  .agents/skills/common-account-baseline/SKILL.md: sha256:daf3859c83c62808e547ca9590ec5ddc5f8cda313d6a5df93e7567e3f327a30b
+  .agents/skills/control-tower-account-enrollment/SKILL.md: sha256:7e174c41ffd81645e15bc9716f95aac973424134f8ff4383f784d0173207bfd8
+  .agents/skills/control-tower-auto-enrollment/SKILL.md: sha256:852ee383cb048e6193b60bd10dc41922ecc34ab364df93d8f4f881aa3cd6dacf
+  .agents/skills/generate-account/SKILL.md: sha256:0a348beeb14fdad3e6612e59c331f69fd932c4c033a660bc2c1e637fd85c8e4f
+  .agents/skills/generate-landing-zone-identity-center/SKILL.md: sha256:6b1e4f0e6e0114916a07038b69ad0fe37f7bb422d3304c712b90c246a3c92d57
+  .agents/skills/generate-landing-zone-ou/SKILL.md: sha256:c757d0a3077cb34e75f6f877a7df497fc807416351ec23935c7b6edcfffa997a
+  .agents/skills/generate-scp/SKILL.md: sha256:a773b345d76f6de71232614c09babc0c77f113dfbcd3185f0f1b8b2fd38abfd5
+  .agents/skills/initialize-control-tower/SKILL.md: sha256:27dfef9c3c95f46a48fa8279a8f9489c75b4cb3cdc15fbecb90fd313cc18c24a
+  .agents/skills/manage-apm-customization/SKILL.md: sha256:34d42fa41ad67d7debac12e981e6f731f043362a373c8b634c31dad581dfbfcd
+  .agents/skills/manage-landing-zone-configuration/SKILL.md: sha256:d4d4e27f214e45c6987e5cde01f4e16f2f2d2723f8aca854f21c994e61e2cc83
+  .agents/skills/manage-landing-zone-release-workflows/SKILL.md: sha256:f868967b67ebbb82ae162981347cda0c50a7628f6e135d392568fc2e1255466f
+  .agents/skills/update-scp-for-control-tower/SKILL.md: sha256:ecc7581c9ae06b97799a24b08eb5539d5dbf308512d185ca9ec805ef3ec0bae9
+  .claude/rules/landing-zone-global.md: sha256:17db66085cc09579a92dd90f6b0e4a8312fc3d377bc7a2546fdcdadf6bb17c07
+  .claude/skills/aws-lambda-implementation/SKILL.md: sha256:96c8423556aa21626cbb4db11e6134be8ff10cf65a052be62a10f3af37e0fc7e
+  .claude/skills/common-account-baseline/SKILL.md: sha256:daf3859c83c62808e547ca9590ec5ddc5f8cda313d6a5df93e7567e3f327a30b
+  .claude/skills/control-tower-account-enrollment/SKILL.md: sha256:7e174c41ffd81645e15bc9716f95aac973424134f8ff4383f784d0173207bfd8
+  .claude/skills/control-tower-auto-enrollment/SKILL.md: sha256:852ee383cb048e6193b60bd10dc41922ecc34ab364df93d8f4f881aa3cd6dacf
+  .claude/skills/generate-account/SKILL.md: sha256:0a348beeb14fdad3e6612e59c331f69fd932c4c033a660bc2c1e637fd85c8e4f
+  .claude/skills/generate-landing-zone-identity-center/SKILL.md: sha256:6b1e4f0e6e0114916a07038b69ad0fe37f7bb422d3304c712b90c246a3c92d57
+  .claude/skills/generate-landing-zone-ou/SKILL.md: sha256:c757d0a3077cb34e75f6f877a7df497fc807416351ec23935c7b6edcfffa997a
+  .claude/skills/generate-scp/SKILL.md: sha256:a773b345d76f6de71232614c09babc0c77f113dfbcd3185f0f1b8b2fd38abfd5
+  .claude/skills/initialize-control-tower/SKILL.md: sha256:27dfef9c3c95f46a48fa8279a8f9489c75b4cb3cdc15fbecb90fd313cc18c24a
+  .claude/skills/manage-apm-customization/SKILL.md: sha256:34d42fa41ad67d7debac12e981e6f731f043362a373c8b634c31dad581dfbfcd
+  .claude/skills/manage-landing-zone-configuration/SKILL.md: sha256:d4d4e27f214e45c6987e5cde01f4e16f2f2d2723f8aca854f21c994e61e2cc83
+  .claude/skills/manage-landing-zone-release-workflows/SKILL.md: sha256:f868967b67ebbb82ae162981347cda0c50a7628f6e135d392568fc2e1255466f
+  .claude/skills/update-scp-for-control-tower/SKILL.md: sha256:ecc7581c9ae06b97799a24b08eb5539d5dbf308512d185ca9ec805ef3ec0bae9
+  .github/instructions/landing-zone-global.instructions.md: sha256:5213c7da2f94f69baf0e55149d5b29aa1b603a4131fe3a26b8a2edd6d8cc3901

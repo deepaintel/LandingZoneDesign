@@ -1,0 +1,116 @@
+# ---------------------------------------------------------------------------------------------
+# Production AWS Organization - deployment configuration.
+#
+# The release-push deploy workflow queues the same Staging-validated commit for Production.
+# Protected `production` GitHub Environment approval gates the reusable deployment job.
+#
+# The Staging AWS Organization mirrors the Production OU hierarchy, so the OU list below is
+# identical to config/staging.yaml by design. Only the target stack name and environment differ.
+#
+# Loading: this file is loaded via @ccoe-aws_if-it/ccoe-config-reader used as a generic YAML
+# loader library by ConfigReader with LandingZoneSchema.
+#
+# The AWS Organizations Root is NEVER created by CDK application code. Its lifecycle is handled
+# by the prepare-organization composite action (.github/actions/prepare-organization) at deploy
+# time: idempotent detect-or-create, Root ID emitted as a step output and fed to `cdk deploy`
+# via the OrganizationRootId CloudFormation parameter. No Root ID is stored in this file.
+#
+# aws.accountId is the Production AWS Organizations management account ID. Its presence here
+# does NOT authorise Production execution; protected GitHub Environment review is required.
+# ---------------------------------------------------------------------------------------------
+aws:
+  # Production AWS Organizations management account (aws-cloud-org-001).
+  accountId: '118669550283'
+
+identityCenter:
+  instanceName: aws-esc-landing-zone-production
+
+# Shared-account per-environment overrides for Production. Names / OU / owner / costCentre /
+# operationsContact come from config/default.yaml. The protected Production release deploys
+# the same shared-accounts stack as Staging. AWS generates the account IDs at deployment time;
+# no generated Production account IDs live in configuration.
+accounts:
+  logArchive:
+    email: 'FMITaws-cloud-org-001+LogArchive@if.se'
+    securityContact: 'Cloud-Security@if.eu'
+  audit:
+    email: 'FMITaws-cloud-org-001+Audit@if.se'
+    securityContact: 'Cloud-Security@if.eu'
+
+# ---------------------------------------------------------------------------------------------
+# Remaining Landing Zone accounts for Production: exactly SharedServices and Network.
+#
+# Governed by `.apm/skills/generate-account/SKILL.md`. Name, OU,
+# owner, costCentre, operationsContact, dataResidency, and domain come from config/default.yaml;
+# only the Production-specific values are declared here. `assertLandingZoneAccountScope`
+# rejects any other entry, so no Verification, workload, or placeholder account can be added.
+#
+# The Production Workloads OUs exist (lz-ou-structure) but hold no member accounts at this
+# stage; live workload accounts are future account-vending scope.
+#
+# Customer-confirmed P1 values: `environment: prod`, `lifecycle: active`,
+# `dataClassification: internal`. owner-email is derived from the Production account email.
+# ---------------------------------------------------------------------------------------------
+landingZoneAccounts:
+  sharedServices:
+    email: 'FMITaws-cloud-org-001+SharedServices@if.se'
+    securityContact: 'Cloud-Security@if.eu'
+    tags:
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
+  network:
+    email: 'FMITaws-cloud-org-001+Network@if.se'
+    securityContact: 'Cloud-Security@if.eu'
+    tags:
+      environment: prod
+      lifecycle: active
+      dataClassification: internal
+
+# ---------------------------------------------------------------------------------------------
+# Control Tower Landing Zone 4.0 - Production retention overrides.
+#
+# The protected `production` GitHub Environment gates deployment. These approved retention
+# values generate the Production manifest from its own configuration.
+#
+# Retention is set explicitly on BOTH integrations (centralizedLogging AND config) because
+# LZ 4.0 uses dedicated resources for CloudTrail-centered centralized logging and for AWS
+# Config. Retention on one does not imply retention on the other.
+#
+# `kmsKeyArn` is DELIBERATELY OMITTED from both `centralizedLogging.configurations` and
+# `config.configurations`. AWS Control Tower applies its standard/default encryption
+# configuration when omitted.
+#
+# Production retention values:
+#   centralizedLogging.configurations.loggingBucket.retentionDays        : 1825
+#   centralizedLogging.configurations.accessLoggingBucket.retentionDays  : 1825
+#   config.configurations.loggingBucket.retentionDays                    : 1825
+#   config.configurations.accessLoggingBucket.retentionDays              : 1825
+# ---------------------------------------------------------------------------------------------
+controlTower:
+  centralizedLogging:
+    configurations:
+      loggingBucket:
+        retentionDays: 1825
+      accessLoggingBucket:
+        retentionDays: 1825
+  config:
+    configurations:
+      loggingBucket:
+        retentionDays: 1825
+      accessLoggingBucket:
+        retentionDays: 1825
+  # AWS Control Tower account auto-enrollment (Landing Zone remediation type INHERITANCE_DRIFT).
+  # Governed by `.apm/skills/control-tower-auto-enrollment/SKILL.md`. Release A keeps
+  # Production disabled: the action is a no-op while AWS reports it disabled and fails closed if
+  # AWS reports it enabled. Change to `true` only in Release B, after Staging verification, the
+  # controlled Staging account-move test, the Suspended/decommissioning validation and explicit
+  # sign-off.
+  autoEnrollment:
+    enabled: false
+
+# Common Account Security Baseline v1.0 - Production acceptance expectation. Must equal the number
+# of configured `landingZoneAccounts` above (SharedServices and Network). Governed by
+# `.apm/skills/common-account-baseline/SKILL.md`.
+accountBaseline:
+  expectedEnforcedAccountCount: 2

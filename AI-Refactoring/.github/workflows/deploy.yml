@@ -1,0 +1,327 @@
+# ============================================================================
+# 1. confirm protected release branch
+# 2. confirm semantic versioning of the release branch
+# 3. confirm tag does not exist (a released branch can never deploy again)
+# 4. deploy to staging (github environment = staging)
+#  4a. validate staging deployment
+#  4b. deploy sequence to staging
+# 5. deploy to production (github environment = production) <- GATE
+#  5a. validate production deployment
+#  5b. deploy sequence to production
+# 6. tag the release (idempotent on re-run)
+# 7. publish the GitHub Release for the existing tag, with generated notes from which the PRs an
+#    earlier release already shipped are removed (notes that cannot be verified stop this step
+#    before a release is created; the tag stays)
+# 8. delete the released branch so it cannot receive further commits, with a GitHub App token after
+#    pre-deletion checks; a cleanup problem is reported as a warning and never fails the release
+# 9. Combined summary of the deployment process
+# Steps 6-8 run only after step 5 succeeds; each needs the step before it.
+# See README.md "Release branch lifecycle".
+# ============================================================================
+name: deploy
+
+on:
+  push:
+    branches:
+      - 'release/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  # A branch-deletion event gets its own group so it can never displace a pending release run.
+  group: ${{ github.event.deleted && format('deploy-deleted-{0}', github.run_id) || 'deploy' }}
+  cancel-in-progress: false
+
+jobs:
+  verify-release-branch:
+    name: Verify the release branch
+    # Deleting a release branch must never start a deployment.
+    if: ${{ !github.event.deleted }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      release_tag: ${{ steps.verify.outputs['release-tag'] }}
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Verify release branch and tag
+        id: verify
+        uses: ./.github/actions/verify-release-branch
+        with:
+          github-token: ${{ github.token }}
+
+  deploy-to-staging:
+    name: Validate and deploy Staging
+    needs: verify-release-branch
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    uses: ./.github/workflows/validate-and-deploy.yml
+    with:
+      aws-environment: staging
+      github-environment: staging
+      diff-continue-on-error: true
+    secrets: inherit
+
+  deploy-to-production:
+    name: Validate and deploy Production
+    needs: deploy-to-staging
+    permissions:
+      id-token: write
+      contents: read
+      packages: read
+    uses: ./.github/workflows/validate-and-deploy.yml
+    with:
+      aws-environment: production
+      github-environment: production
+      diff-continue-on-error: false
+    secrets: inherit
+
+  tag-release:
+    name: Tag successful Production release
+    needs: [verify-release-branch, deploy-to-production]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      release_tag: ${{ steps.tag.outputs['release-tag'] }}
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Tag validated release commit
+        id: tag
+        uses: ./.github/actions/tag-release
+        with:
+          release-tag: ${{ needs['verify-release-branch'].outputs.release_tag }}
+          commit-sha: ${{ github.sha }}
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: tag-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Read-only: the notes check lists the PRs GitHub associates with each commit.
+      pull-requests: read
+      packages: read
+    outputs:
+      release_url: ${{ steps.release.outputs['release-url'] }}
+    steps:
+      - name: Checkout
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      # The release-notes verification is TypeScript. This job only needs the toolchain; it makes no
+      # AWS call. The environment is only the configuration the workspace action validates.
+      - name: Setup workspace
+        uses: ./.github/actions/setup-workspace
+        with:
+          aws-environment: production
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Create GitHub Release with verified generated notes
+        id: release
+        uses: ./.github/actions/publish-github-release
+        with:
+          github-token: ${{ github.token }}
+          release-tag: ${{ needs['tag-release'].outputs.release_tag }}
+          commit-sha: ${{ github.sha }}
+
+  # Housekeeping after the release is complete. It never fails the run: each step whose failure would
+  # only mean "branch not deleted" continues, and the last step reports the exact outcome as a notice
+  # or warning. The branch can only be deleted inside the cleanup action, after all of its checks pass.
+  retire-release-branch:
+    name: Delete released branch
+    needs: [deploy-to-production, tag-release, publish-release]
+    runs-on: ubuntu-latest
+    # Holds the App credentials, restricted by the administrators to release/** branches, so no other
+    # branch or workflow can read the key. No reviewers: cleanup runs unattended after the release.
+    environment: release-cleanup
+    # Read-only workflow token for the checks; the deletion uses the GitHub App's installation token.
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+      deployments: read
+      packages: read
+    outputs:
+      outcome: ${{ steps.report.outputs.outcome }}
+      reason: ${{ steps.report.outputs.reason }}
+    steps:
+      - name: Checkout
+        id: checkout
+        continue-on-error: true
+        uses: ccoe-aws/reusable-workflows/.github/actions/checkout@main
+
+      - name: Setup workspace
+        id: workspace
+        if: ${{ steps.checkout.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.github/actions/setup-workspace
+        with:
+          aws-environment: production
+          read-packages-token: ${{ secrets.READ_PACKAGES }}
+
+      - name: Delete release branch after successful release
+        id: retire
+        if: ${{ steps.workspace.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.github/actions/retire-release-branch
+        with:
+          github-token: ${{ github.token }}
+          # Configured by the repository administrators; see "Release branch cleanup" in README.md.
+          app-id: ${{ vars.RELEASE_CLEANUP_APP_ID }}
+          app-private-key: ${{ secrets.RELEASE_CLEANUP_APP_PRIVATE_KEY }}
+          release-branch: ${{ github.ref_name }}
+          released-sha: ${{ github.sha }}
+          release-tag: ${{ needs['tag-release'].outputs.release_tag }}
+          production-result: ${{ needs['deploy-to-production'].result }}
+          publish-result: ${{ needs['publish-release'].result }}
+          cleanup-environment: release-cleanup
+
+      - name: Report branch cleanup outcome
+        id: report
+        if: ${{ always() }}
+        shell: bash
+        env:
+          CHECKOUT_OUTCOME: ${{ steps.checkout.outcome }}
+          WORKSPACE_OUTCOME: ${{ steps.workspace.outcome }}
+          RETIRE_STEP_OUTCOME: ${{ steps.retire.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.retire.outputs.outcome }}
+          CLEANUP_REASON: ${{ steps.retire.outputs.reason }}
+        run: |
+          set -uo pipefail
+          outcome="$CLEANUP_OUTCOME"
+          reason="$CLEANUP_REASON"
+          if [ "$CHECKOUT_OUTCOME" != success ]; then
+            outcome=failed; reason='The repository could not be checked out; the branch was not deleted.'
+          elif [ "$WORKSPACE_OUTCOME" != success ]; then
+            outcome=failed; reason='The workspace could not be set up; the branch was not deleted.'
+          elif [ "$RETIRE_STEP_OUTCOME" != success ] || [ -z "$outcome" ]; then
+            outcome=failed; reason="The cleanup step ended '${RETIRE_STEP_OUTCOME}' without an outcome; the branch was not deleted."
+          fi
+          case "$outcome" in
+            deleted | already-deleted) echo "::notice::Released branch cleanup ${outcome}: ${reason}" ;;
+            *)
+              echo "::warning::Released branch cleanup ${outcome}: ${reason} The release itself succeeded."
+              echo "- Released branch cleanup \`${outcome}\`: ${reason}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+          esac
+          delimiter="REASON_$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')"
+          {
+            echo "outcome=${outcome}"
+            echo "reason<<${delimiter}"
+            echo "${reason}"
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+
+  deployment-summary:
+    name: Combined deployment summary
+    needs:
+      [
+        verify-release-branch,
+        deploy-to-staging,
+        deploy-to-production,
+        tag-release,
+        publish-release,
+        retire-release-branch
+      ]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Record deployment results
+        env:
+          PREFLIGHT_RESULT: ${{ needs.verify-release-branch.result }}
+          STAGING_RESULT: ${{ needs.deploy-to-staging.result }}
+          PRODUCTION_RESULT: ${{ needs.deploy-to-production.result }}
+          TAG_RESULT: ${{ needs.tag-release.result }}
+          RELEASE_TAG: ${{ needs.tag-release.outputs.release_tag }}
+          PUBLISH_RESULT: ${{ needs['publish-release'].result }}
+          RELEASE_URL: ${{ needs['publish-release'].outputs.release_url }}
+          RETIRE_RESULT: ${{ needs['retire-release-branch'].result }}
+          CLEANUP_OUTCOME: ${{ needs['retire-release-branch'].outputs.outcome }}
+          CLEANUP_REASON: ${{ needs['retire-release-branch'].outputs.reason }}
+          STAGING_ACCOUNT_ID: ${{ needs['deploy-to-staging'].outputs['account-id'] }}
+          STAGING_ORGANIZATION_ID: ${{ needs['deploy-to-staging'].outputs['organization-id'] }}
+          STAGING_ORGANIZATION_ROOT_ID: ${{ needs['deploy-to-staging'].outputs['organization-root-id'] }}
+          STAGING_SCP_STATUS: ${{ needs['deploy-to-staging'].outputs['service-control-policy-status'] }}
+          STAGING_RCP_STATUS: ${{ needs['deploy-to-staging'].outputs['resource-control-policy-status'] }}
+          STAGING_IDENTITY_CENTER_ARN: ${{ needs['deploy-to-staging'].outputs['identity-center-instance-arn'] }}
+          STAGING_AUDIT_ACCOUNT_ID: ${{ needs['deploy-to-staging'].outputs['audit-account-id'] }}
+          STAGING_LOG_ARCHIVE_ACCOUNT_ID: ${{ needs['deploy-to-staging'].outputs['log-archive-account-id'] }}
+          STAGING_LANDING_ZONE_ARN: ${{ needs['deploy-to-staging'].outputs['landing-zone-arn'] }}
+          STAGING_CT_OPERATION_ID: ${{ needs['deploy-to-staging'].outputs['operation-identifier'] }}
+          STAGING_LANDING_ZONE_EXISTS: ${{ needs['deploy-to-staging'].outputs['landing-zone-exists'] }}
+          STAGING_AUTO_ENROLLMENT: ${{ needs['deploy-to-staging'].outputs['auto-enrollment'] }}
+          STAGING_AUTO_ENROLLMENT_OPERATION_ID: ${{ needs['deploy-to-staging'].outputs['auto-enrollment-operation-identifier'] }}
+          STAGING_ACCOUNT_BASELINE_ACCEPTANCE: ${{ needs['deploy-to-staging'].outputs['account-baseline-acceptance'] }}
+          STAGING_ACCOUNT_BASELINE_RESULTS: ${{ needs['deploy-to-staging'].outputs['account-baseline-results'] }}
+          PRODUCTION_ACCOUNT_ID: ${{ needs['deploy-to-production'].outputs['account-id'] }}
+          PRODUCTION_ORGANIZATION_ID: ${{ needs['deploy-to-production'].outputs['organization-id'] }}
+          PRODUCTION_ORGANIZATION_ROOT_ID: ${{ needs['deploy-to-production'].outputs['organization-root-id'] }}
+          PRODUCTION_SCP_STATUS: ${{ needs['deploy-to-production'].outputs['service-control-policy-status'] }}
+          PRODUCTION_RCP_STATUS: ${{ needs['deploy-to-production'].outputs['resource-control-policy-status'] }}
+          PRODUCTION_IDENTITY_CENTER_ARN: ${{ needs['deploy-to-production'].outputs['identity-center-instance-arn'] }}
+          PRODUCTION_AUDIT_ACCOUNT_ID: ${{ needs['deploy-to-production'].outputs['audit-account-id'] }}
+          PRODUCTION_LOG_ARCHIVE_ACCOUNT_ID: ${{ needs['deploy-to-production'].outputs['log-archive-account-id'] }}
+          PRODUCTION_LANDING_ZONE_ARN: ${{ needs['deploy-to-production'].outputs['landing-zone-arn'] }}
+          PRODUCTION_CT_OPERATION_ID: ${{ needs['deploy-to-production'].outputs['operation-identifier'] }}
+          PRODUCTION_LANDING_ZONE_EXISTS: ${{ needs['deploy-to-production'].outputs['landing-zone-exists'] }}
+          PRODUCTION_AUTO_ENROLLMENT: ${{ needs['deploy-to-production'].outputs['auto-enrollment'] }}
+          PRODUCTION_AUTO_ENROLLMENT_OPERATION_ID: ${{ needs['deploy-to-production'].outputs['auto-enrollment-operation-identifier'] }}
+          PRODUCTION_ACCOUNT_BASELINE_ACCEPTANCE: ${{ needs['deploy-to-production'].outputs['account-baseline-acceptance'] }}
+          PRODUCTION_ACCOUNT_BASELINE_RESULTS: ${{ needs['deploy-to-production'].outputs['account-baseline-results'] }}
+        run: |
+          {
+            echo '### Landing zone deployment'
+            echo "- Release branch: \`${GITHUB_REF_NAME}\`"
+            echo "- Commit: \`${GITHUB_SHA}\`"
+            echo "- Release checks: \`${PREFLIGHT_RESULT}\`"
+            if [ "$STAGING_RESULT" != skipped ]; then
+              echo "- Staging validation and deployment: \`${STAGING_RESULT}\`"
+            fi
+            if [ "$STAGING_RESULT" = success ]; then
+              echo "- Staging target account: \`${STAGING_ACCOUNT_ID}\`"
+              echo "- Staging Organizations ID / Root ID: \`${STAGING_ORGANIZATION_ID}\` / \`${STAGING_ORGANIZATION_ROOT_ID}\`"
+              echo "- Staging SCP / RCP status: \`${STAGING_SCP_STATUS}\` / \`${STAGING_RCP_STATUS}\`"
+              echo "- Staging IAM Identity Center instance: \`${STAGING_IDENTITY_CENTER_ARN}\`"
+              echo "- Staging Audit / Log Archive account IDs: \`${STAGING_AUDIT_ACCOUNT_ID}\` / \`${STAGING_LOG_ARCHIVE_ACCOUNT_ID}\`"
+              echo "- Staging Control Tower Landing Zone ARN: \`${STAGING_LANDING_ZONE_ARN}\`"
+              echo "- Staging Control Tower operation ID: \`${STAGING_CT_OPERATION_ID}\`"
+              echo "- Staging Landing Zone existed before initialization: \`${STAGING_LANDING_ZONE_EXISTS}\`"
+              echo "- Staging Control Tower auto-enrollment: \`${STAGING_AUTO_ENROLLMENT}\` (Landing Zone operation: \`${STAGING_AUTO_ENROLLMENT_OPERATION_ID:-none}\`)"
+              echo "- Staging Common Account Security Baseline v1.0: \`${STAGING_ACCOUNT_BASELINE_ACCEPTANCE:-not run}\` (results: \`${STAGING_ACCOUNT_BASELINE_RESULTS:-none}\`)"
+            fi
+            if [ "$PRODUCTION_RESULT" = success ]; then
+              echo "- Production validation and deployment: \`${PRODUCTION_RESULT}\`"
+              echo "- Production target account: \`${PRODUCTION_ACCOUNT_ID}\`"
+              echo "- Production Organizations ID / Root ID: \`${PRODUCTION_ORGANIZATION_ID}\` / \`${PRODUCTION_ORGANIZATION_ROOT_ID}\`"
+              echo "- Production SCP / RCP status: \`${PRODUCTION_SCP_STATUS}\` / \`${PRODUCTION_RCP_STATUS}\`"
+              echo "- Production IAM Identity Center instance: \`${PRODUCTION_IDENTITY_CENTER_ARN}\`"
+              echo "- Production Audit / Log Archive account IDs: \`${PRODUCTION_AUDIT_ACCOUNT_ID}\` / \`${PRODUCTION_LOG_ARCHIVE_ACCOUNT_ID}\`"
+              echo "- Production Control Tower Landing Zone ARN: \`${PRODUCTION_LANDING_ZONE_ARN}\`"
+              echo "- Production Control Tower operation ID: \`${PRODUCTION_CT_OPERATION_ID}\`"
+              echo "- Production Landing Zone existed before initialization: \`${PRODUCTION_LANDING_ZONE_EXISTS}\`"
+              echo "- Production Control Tower auto-enrollment: \`${PRODUCTION_AUTO_ENROLLMENT}\` (Landing Zone operation: \`${PRODUCTION_AUTO_ENROLLMENT_OPERATION_ID:-none}\`)"
+              echo "- Production Common Account Security Baseline v1.0: \`${PRODUCTION_ACCOUNT_BASELINE_ACCEPTANCE:-not run}\` (results: \`${PRODUCTION_ACCOUNT_BASELINE_RESULTS:-none}\`)"
+              echo "- Release tagging: \`${TAG_RESULT}\`"
+              if [ "$TAG_RESULT" = success ]; then
+                echo "- Release tag: \`${RELEASE_TAG}\`"
+              fi
+              echo "- GitHub Release: \`${PUBLISH_RESULT}\`"
+              if [ "$PUBLISH_RESULT" = success ]; then
+                echo "- GitHub Release URL: ${RELEASE_URL}"
+              fi
+              # Cleanup is housekeeping: its outcome is reported here, it never changes the run's result.
+              echo "- Released branch cleanup: \`${CLEANUP_OUTCOME:-${RETIRE_RESULT}}\`${CLEANUP_REASON:+ - ${CLEANUP_REASON}}"
+              if [ "$PUBLISH_RESULT" = success ] && [ "$CLEANUP_OUTCOME" != deleted ] && [ "$CLEANUP_OUTCOME" != already-deleted ]; then
+                echo "- WARNING: \`${GITHUB_REF_NAME}\` is released but still exists. Resolve the reason above, then re-run the \"Delete released branch\" job or delete the branch manually; do not add commits to it."
+              fi
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

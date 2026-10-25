@@ -1,0 +1,273 @@
+name: prepare-organization
+description: >
+  Ensure an AWS Organization exists in the current AWS credentials' account, resolve its
+  Organization ID and Root ID, and (optionally) confirm the SERVICE_CONTROL_POLICY and/or
+  RESOURCE_CONTROL_POLICY policy types are enabled on the Root. Idempotent - detects an
+  existing Organization and creates one with --feature-set ALL only when none exists;
+  treats an already-enabled policy type as success. Requires AWS credentials to be
+  configured before this action runs (typically through the reusable aws-credentials
+  composite action used earlier in the same job).
+inputs:
+  expected-account-id:
+    description: >
+      12-digit AWS account ID this action must be running against. The action calls
+      sts:GetCallerIdentity and refuses to proceed if the returned account does not match.
+      Prevents create-organization from ever firing against the wrong account.
+    required: true
+  aws-region:
+    description: AWS region for the Organizations service calls.
+    required: false
+    default: eusc-de-east-1
+  ensure-scp-policy-type:
+    description: >
+      When 'true', verifies SERVICE_CONTROL_POLICY is enabled on the Organizations Root and
+      enables it idempotently if not. Required for the organization policy stack, which contains
+      Service Control Policies. AWS Organizations does NOT auto-enable any policy type when the
+      Organization is created with --feature-set ALL; each policy type must be enabled
+      explicitly. Defaults to 'false' so callers that only need OU deployment (or only
+      Organization discovery) do not accidentally enable a policy type they do not manage.
+      Reuses the already-resolved organization-root-id - no second Organization discovery mechanism
+      is introduced. Fails the workflow safely if the policy type is unavailable in this AWS ESC
+      Organization or the deployment role lacks organizations:EnablePolicyType.
+    required: false
+    default: 'false'
+  ensure-rcp-policy-type:
+    description: >
+      When 'true', verifies RESOURCE_CONTROL_POLICY is enabled on the Organizations Root and
+      enables it idempotently if not. Required for the organization policy stack, which contains
+      Resource Control Policies. Defaults to 'false' so callers that only need OU deployment (or
+      only Organization discovery) do not accidentally enable a policy type they do not manage.
+      Reuses the already-resolved organization-root-id - no second Organization discovery mechanism
+      is introduced. Fails the workflow safely if the policy type is unavailable in this AWS ESC
+      Organization or the deployment role lacks organizations:EnablePolicyType.
+    required: false
+    default: 'false'
+outputs:
+  organization-id:
+    description: AWS Organizations Organization ID (o-<10-32 lowercase alphanumerics>).
+    value: ${{ steps.prepare.outputs.organization-id }}
+  organization-root-id:
+    description: AWS Organizations Root ID (r-<4-32 lowercase alphanumerics>).
+    value: ${{ steps.prepare.outputs.organization-root-id }}
+  service-control-policy-status:
+    description: >
+      Status of the SERVICE_CONTROL_POLICY policy type on the Organizations Root. One of
+      'ENABLED' (already or newly), 'NOT_REQUESTED' (input ensure-scp-policy-type was not 'true'),
+      or the readiness step fails before this output is emitted.
+    value: ${{ steps.prepare.outputs.service-control-policy-status }}
+  resource-control-policy-status:
+    description: >
+      Status of the RESOURCE_CONTROL_POLICY policy type on the Organizations Root. One of
+      'ENABLED' (already or newly), 'NOT_REQUESTED' (input ensure-rcp-policy-type was not 'true'),
+      or the readiness step fails before this output is emitted.
+    value: ${{ steps.prepare.outputs.resource-control-policy-status }}
+runs:
+  using: composite
+  steps:
+    - id: prepare
+      shell: bash
+      env:
+        AWS_REGION: ${{ inputs.aws-region }}
+        EXPECTED_ACCOUNT_ID: ${{ inputs.expected-account-id }}
+        ENSURE_SCP_POLICY_TYPE: ${{ inputs.ensure-scp-policy-type }}
+        ENSURE_RCP_POLICY_TYPE: ${{ inputs.ensure-rcp-policy-type }}
+      run: |
+        set -euo pipefail
+
+        # Guard: assert we are in the expected account before touching Organizations.
+        if ! printf '%s' "${EXPECTED_ACCOUNT_ID}" | grep -qE '^[0-9]{12}$'; then
+          echo "::error::expected-account-id must be a 12-digit string (got '${EXPECTED_ACCOUNT_ID}')"
+          exit 1
+        fi
+
+        current=$(aws sts get-caller-identity --query Account --output text)
+        if [ "${current}" != "${EXPECTED_ACCOUNT_ID}" ]; then
+          echo "::error::AWS credentials resolve to account ${current}, expected ${EXPECTED_ACCOUNT_ID}."
+          echo "::error::Refusing to touch AWS Organizations against the wrong account."
+          exit 1
+        fi
+        echo "Confirmed AWS credentials point at account ${current}."
+
+        # Idempotent detect-or-create. describe-organization returns the org if one exists;
+        # AWSOrganizationsNotInUseException means no organization exists in the account.
+        echo "Checking for existing AWS Organization in account ${current}..."
+        if aws organizations describe-organization >/dev/null 2>org_err.log; then
+          echo "AWS Organization already exists in account ${current}. Skipping create-organization."
+        elif grep -q 'AWSOrganizationsNotInUseException' org_err.log; then
+          echo "No AWS Organization in account ${current}. Creating with --feature-set ALL..."
+          aws organizations create-organization --feature-set ALL >/dev/null
+          echo "AWS Organization created."
+        else
+          echo "::error::Unexpected failure from describe-organization:"
+          cat org_err.log
+          rm -f org_err.log
+          exit 1
+        fi
+        rm -f org_err.log
+
+        # Resolve identifiers with a retry loop for eventual consistency after create.
+        org_id=""
+        root_id=""
+        for attempt in $(seq 1 30); do
+          org_id=$(aws organizations describe-organization \
+            --query 'Organization.Id' --output text 2>/dev/null || true)
+          root_id=$(aws organizations list-roots \
+            --query 'Roots[0].Id' --output text 2>/dev/null || true)
+          if printf '%s' "${org_id}"  | grep -qE '^o-[0-9a-z]{10,32}$' \
+          && printf '%s' "${root_id}" | grep -qE '^r-[0-9a-z]{4,32}$'; then
+            break
+          fi
+          echo "Identifiers not ready yet (attempt ${attempt}/30). Retrying in 10s..."
+          sleep 10
+        done
+
+        if ! printf '%s' "${org_id}" | grep -qE '^o-[0-9a-z]{10,32}$'; then
+          echo "::error::Could not resolve a valid Organization ID (got '${org_id}')."
+          exit 1
+        fi
+        if ! printf '%s' "${root_id}" | grep -qE '^r-[0-9a-z]{4,32}$'; then
+          echo "::error::Could not resolve a valid Root ID (got '${root_id}')."
+          exit 1
+        fi
+
+        echo "organization-id=${org_id}"       >> "$GITHUB_OUTPUT"
+        echo "organization-root-id=${root_id}" >> "$GITHUB_OUTPUT"
+
+        # -----------------------------------------------------------------------------------
+        # OPTIONAL: policy-type readiness on the Root. AWS Organizations does not auto-enable
+        # any policy type when the Organization is created with --feature-set ALL; each type
+        # (SERVICE_CONTROL_POLICY, RESOURCE_CONTROL_POLICY, ...) must be enabled explicitly on
+        # the Root via organizations:EnablePolicyType before AWS::Organizations::Policy
+        # resources of that type can be created. This block reuses the already-resolved Root
+        # ID rather than performing a second Organization discovery. Idempotent: an already-
+        # enabled policy type is success. Fails safely BEFORE any policy stack deployment can
+        # begin if:
+        #   * the policy type is unavailable in this AWS ESC Organization, or
+        #   * the deployment role lacks organizations:EnablePolicyType.
+        # -----------------------------------------------------------------------------------
+        ensure_policy_type() {
+          local policy_type="$1"
+          local root_id="$2"
+          local err_log
+          err_log=$(mktemp)
+
+          # JMESPath note: unwrap the filtered Roots projection with `| [0]` BEFORE descending
+          # into PolicyTypes. Without the unwrap, `Roots[?...].PolicyTypes[?...].Status | [0]`
+          # returns `None` under --output text even when the Root reports the type as ENABLED,
+          # because the outer filter creates a projection that suppresses the nested filter's
+          # result. `Roots[?Id=='X'] | [0].PolicyTypes[?Type=='Y'].Status | [0]` collapses the
+          # outer filter to a single object first, then the child filter behaves normally.
+          local current_status
+          if ! current_status=$(aws organizations list-roots \
+                --query "Roots[?Id=='${root_id}'] | [0].PolicyTypes[?Type=='${policy_type}'].Status | [0]" \
+                --output text 2>"${err_log}"); then
+            echo "::error::Unable to list Root policy types for ${root_id}:"
+            cat "${err_log}"
+            rm -f "${err_log}"
+            return 1
+          fi
+
+          if [ "${current_status}" = "ENABLED" ]; then
+            echo "${policy_type} is already ENABLED on Root ${root_id}."
+            rm -f "${err_log}"
+            return 0
+          fi
+
+          if [ -z "${current_status}" ] || [ "${current_status}" = "None" ]; then
+            echo "${policy_type} is not yet enabled on Root ${root_id}. Enabling..."
+          else
+            echo "${policy_type} status on Root ${root_id} is '${current_status}'. Attempting to enable..."
+          fi
+
+          # Idempotent enable: PolicyTypeAlreadyEnabledException is treated as success.
+          # AccessDeniedException maps cleanly to a missing organizations:EnablePolicyType
+          # permission on the deployment role; other errors are reported and stop deployment.
+          if aws organizations enable-policy-type \
+               --root-id "${root_id}" \
+               --policy-type "${policy_type}" >/dev/null 2>"${err_log}"; then
+            echo "${policy_type} enabled on Root ${root_id}."
+            rm -f "${err_log}"
+            return 0
+          fi
+
+          if grep -q 'PolicyTypeAlreadyEnabledException' "${err_log}"; then
+            echo "${policy_type} was concurrently enabled. Treating as success."
+            rm -f "${err_log}"
+            return 0
+          fi
+          if grep -qE 'PolicyTypeNotAvailableForOrganizationException|UnsupportedAPIEndpointException' "${err_log}"; then
+            cat "${err_log}"
+            rm -f "${err_log}"
+            echo "::error::${policy_type} is NOT AVAILABLE in this AWS ESC Organization."
+            echo "::error::Policy deployment is blocked. Report as a deployment blocker."
+            return 1
+          fi
+          if grep -q 'AccessDenied' "${err_log}"; then
+            cat "${err_log}"
+            rm -f "${err_log}"
+            echo "::error::The deployment role does not have organizations:EnablePolicyType for ${policy_type}."
+            echo "::error::Grant the permission on the foundation-managed deployment role and rerun."
+            return 1
+          fi
+          cat "${err_log}"
+          rm -f "${err_log}"
+          echo "::error::Unexpected failure from organizations:EnablePolicyType for ${policy_type}. See details above."
+          return 1
+        }
+
+        # Wait for policy-type propagation. list-roots can lag briefly after enable-policy-type;
+        # returning before the Root reports ENABLED would surface the exact "This operation can
+        # be performed only for enabled policy types" error the policy stack deploy is guarding
+        # against. 30 attempts * 10s = 5 minutes upper bound, matching the identifier retry loop.
+        wait_for_policy_type() {
+          local policy_type="$1"
+          local root_id="$2"
+          for attempt in $(seq 1 30); do
+            local status
+            # Same JMESPath unwrap as ensure_policy_type - see the note there.
+            status=$(aws organizations list-roots \
+              --query "Roots[?Id=='${root_id}'] | [0].PolicyTypes[?Type=='${policy_type}'].Status | [0]" \
+              --output text 2>/dev/null || true)
+            if [ "${status}" = "ENABLED" ]; then
+              return 0
+            fi
+            echo "${policy_type} not yet reporting ENABLED on Root ${root_id} (attempt ${attempt}/30, status '${status}'). Retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::${policy_type} did not reach ENABLED on Root ${root_id} within the propagation window."
+          return 1
+        }
+
+        scp_status="NOT_REQUESTED"
+        if [ "${ENSURE_SCP_POLICY_TYPE}" = "true" ]; then
+          echo "Verifying SERVICE_CONTROL_POLICY readiness on Root ${root_id}..."
+          ensure_policy_type SERVICE_CONTROL_POLICY "${root_id}"
+          wait_for_policy_type SERVICE_CONTROL_POLICY "${root_id}"
+          scp_status="ENABLED"
+        fi
+        echo "service-control-policy-status=${scp_status}" >> "$GITHUB_OUTPUT"
+
+        rcp_status="NOT_REQUESTED"
+        if [ "${ENSURE_RCP_POLICY_TYPE}" = "true" ]; then
+          echo "Verifying RESOURCE_CONTROL_POLICY readiness on Root ${root_id}..."
+          ensure_policy_type RESOURCE_CONTROL_POLICY "${root_id}"
+          wait_for_policy_type RESOURCE_CONTROL_POLICY "${root_id}"
+          rcp_status="ENABLED"
+        fi
+        echo "resource-control-policy-status=${rcp_status}" >> "$GITHUB_OUTPUT"
+
+        # Audit trail: every run of this action logs the identifiers to the run summary.
+        {
+          echo "### AWS Organization"
+          echo ""
+          echo "| Field | Value |"
+          echo "| --- | --- |"
+          echo "| Account | \`${current}\` |"
+          echo "| Organization ID | \`${org_id}\` |"
+          echo "| Root ID | \`${root_id}\` |"
+          echo "| Region | \`${AWS_REGION}\` |"
+          echo "| SERVICE_CONTROL_POLICY status | \`${scp_status}\` |"
+          echo "| RESOURCE_CONTROL_POLICY status | \`${rcp_status}\` |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        echo "Resolved organization=${org_id} root=${root_id} scp=${scp_status} rcp=${rcp_status}"

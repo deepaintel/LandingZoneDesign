@@ -1,0 +1,119 @@
+name: deploy-landing-zone-accounts
+description: >
+  Reconcile the remaining Landing Zone accounts with AWS Organizations: SharedServices, Network,
+  and the six CCoE Verification accounts in Staging; exactly SharedServices and Network in
+  Production (`assertLandingZoneAccountScope`). The account inventory comes only from validated
+  environment configuration. A read-only plan classifies every account as EXISTING_MATCH,
+  MISSING, or CONFLICT and stops on any CONFLICT before a mutating call. The apply step then
+  creates only MISSING accounts, one at a time, places each under its configured OU, applies the
+  mandatory P1 tags, and stops on the first failure. A rerun reuses every account that already
+  exists, so a partially completed run resumes without a second CreateAccount.
+  Account IDs and OU IDs come only from the live Organization: OU paths are resolved at runtime
+  from the Organization Root, and the action outputs the same reconciled IDs whether an account
+  was discovered or created. Intended for the release workflow (validate-and-deploy.yml)
+  per `.apm/skills/generate-account/SKILL.md`. Deliberately separate from `deploy-shared-accounts`,
+  so the Audit / Log Archive Path A contract stays scoped to that action. Requires AWS
+  credentials to be configured before it runs (the reusable `aws-credentials` composite action);
+  performs no OIDC authentication and never requests `id-token: write`.
+inputs:
+  aws-environment:
+    description: Target environment (`staging` or `production`).
+    required: true
+  aws-region:
+    description: AWS region for Organizations API calls. Must match the configured region.
+    required: false
+    default: eusc-de-east-1
+outputs:
+  account-count:
+    description: Number of configured Landing Zone accounts, all reconciled by this run.
+    value: ${{ steps.validate.outputs.account-count }}
+  account-ids:
+    description: Newline-delimited `<key>=<12-digit account id>` pairs for every configured account, existing or newly created.
+    value: ${{ steps.validate.outputs.account-ids }}
+  ou-ids:
+    description: Newline-delimited `<ou path>=<ou id>` pairs for every OU that holds a configured account, resolved at runtime.
+    value: ${{ steps.validate.outputs.ou-ids }}
+runs:
+  using: composite
+  steps:
+    # Fail fast on an unexpected environment before any AWS API call is issued.
+    - name: Check deployment environment
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.aws-environment }}
+      run: |
+        set -euo pipefail
+        case "${ENVIRONMENT_NAME}" in
+          staging|production) echo "Environment='${ENVIRONMENT_NAME}' - continuing." ;;
+          *) echo "::error::Unsupported environment '${ENVIRONMENT_NAME}'. Use staging or production."; exit 1 ;;
+        esac
+
+    # Read-only. Classifies every configured account before anything is created; any CONFLICT
+    # fails this step, so the apply step never runs.
+    - name: Plan Landing Zone accounts (read-only)
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.aws-environment }}
+        ESC_REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+        REPORT_FILE="${RUNNER_TEMP}/landing-zone-accounts-plan.json"
+        set +e
+        pnpm --silent run provision:landing-zone-accounts -- plan \
+          --environment "${ENVIRONMENT_NAME}" --region "${ESC_REGION}" --report-file "${REPORT_FILE}"
+        rc=$?
+        set -e
+        if [ -f "${REPORT_FILE}" ]; then
+          {
+            echo "### Landing Zone account plan (${ENVIRONMENT_NAME})"
+            echo ""
+            echo "| Key | Name | Email | Account ID | State | Configured OU | Current parent | Classification | Pending | Reason |"
+            echo "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"
+            jq -r '.accounts[] | "| \(.key) | \(.name) | \(.email) | \(.accountId) | \(.state) | \(.ouPath) (\(.targetOuId)) | \(.currentParentId) | \(.classification) | \(.pendingActions | join(", ")) | \(.reason) |"' "${REPORT_FILE}"
+          } >> "$GITHUB_STEP_SUMMARY"
+        fi
+        if [ "${rc}" -ne 0 ]; then
+          echo "::error::Landing Zone account plan failed; no account was created. Resolve every CONFLICT (or OU resolution error) reported above."
+          exit "${rc}"
+        fi
+
+    - name: Provision missing Landing Zone accounts
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.aws-environment }}
+        ESC_REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+        pnpm --silent run provision:landing-zone-accounts -- apply \
+          --environment "${ENVIRONMENT_NAME}" --region "${ESC_REGION}"
+
+    # Read-only. A fresh plan must show every configured account reconciled: ACTIVE, exact name
+    # and email, under its configured OU, with its P1 tags. Emits the IDs for all accounts.
+    - name: Validate Landing Zone accounts
+      id: validate
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.aws-environment }}
+        ESC_REGION: ${{ inputs.aws-region }}
+      run: |
+        set -euo pipefail
+        REPORT_FILE="${RUNNER_TEMP}/landing-zone-accounts-validate.json"
+        pnpm --silent run provision:landing-zone-accounts -- validate \
+          --environment "${ENVIRONMENT_NAME}" --region "${ESC_REGION}" --report-file "${REPORT_FILE}"
+
+        COUNT=$(jq -r '.count' "${REPORT_FILE}")
+        INVALID=$(jq -r '[.accounts[] | select(.accountId | test("^[0-9]{12}$") | not) | .key] | join(", ")' "${REPORT_FILE}")
+        if [ -n "${INVALID}" ]; then
+          echo "::error::Accounts without a 12-digit account ID: ${INVALID}."
+          exit 1
+        fi
+        echo "account-count=${COUNT}" >> "$GITHUB_OUTPUT"
+        {
+          echo "account-ids<<EOF"
+          jq -r '.accounts[] | "\(.key)=\(.accountId)"' "${REPORT_FILE}"
+          echo "EOF"
+          echo "ou-ids<<EOF"
+          jq -r '[.accounts[] | "\(.ouPath)=\(.targetOuId)"] | unique | .[]' "${REPORT_FILE}"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+        echo "Landing Zone accounts validated: ${COUNT}."

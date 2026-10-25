@@ -1,0 +1,84 @@
+name: Verify release branch
+description: Confirm the release branch is protected, versioned, and has no existing release tag.
+inputs:
+  github-token:
+    description: GitHub token with read access to the repository branch and rules.
+    required: true
+outputs:
+  release-tag:
+    description: Validated release tag name derived from the protected branch.
+    value: ${{ steps.version.outputs.release-tag }}
+runs:
+  using: composite
+  steps:
+    - name: Check semantic release version
+      id: version
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "$GITHUB_REF" in
+          refs/heads/release/*) branch_version="${GITHUB_REF#refs/heads/release/}" ;;
+          *) echo "::error::Expected a release/* branch"; exit 1 ;;
+        esac
+        semver_pattern='^(.*-)?(v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*))$'
+        if [[ ! "$branch_version" =~ $semver_pattern ]]; then
+          echo "::error::Release branch must end in a MAJOR.MINOR.PATCH version"
+          exit 1
+        fi
+        echo "release-tag=release-${BASH_REMATCH[2]}" >> "$GITHUB_OUTPUT"
+
+    - name: Check effective branch rules
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        case "$GITHUB_REF" in
+          refs/heads/release/*) branch="${GITHUB_REF#refs/heads/}" ;;
+          *) echo "::error::Expected a release/* branch"; exit 1 ;;
+        esac
+
+        encoded_branch=$(jq -rn --arg branch "$branch" '$branch | @uri')
+        url="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+        branch_details=$(curl --fail-with-body --silent --show-error \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H 'Accept: application/vnd.github+json' \
+          "${url}/branches/${encoded_branch}")
+        if ! jq -e --arg branch "$branch" --arg sha "$GITHUB_SHA" \
+          '.name == $branch and .protected == true and .commit.sha == $sha' \
+          <<< "$branch_details" > /dev/null; then
+          echo "::error::Release branch is unprotected or no longer points to this commit"
+          exit 1
+        fi
+
+        rules=$(curl --fail-with-body --silent --show-error \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H 'Accept: application/vnd.github+json' \
+          "${url}/rules/branches/${encoded_branch}")
+        if ! jq -e 'type == "array" and any(.[]; .type == "pull_request")' \
+          <<< "$rules" > /dev/null; then
+          echo "::error::Release branch has no active pull-request rule"
+          exit 1
+        fi
+        echo "Verified protected release branch ${branch} at ${GITHUB_SHA} with pull-request rules"
+
+    - name: Check release tag is available
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        RELEASE_TAG: ${{ steps.version.outputs.release-tag }}
+      run: |
+        set -euo pipefail
+        encoded_tag=$(jq -rn --arg tag "$RELEASE_TAG" '$tag | @uri')
+        response_code=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H 'Accept: application/vnd.github+json' \
+          "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/git/ref/tags/${encoded_tag}")
+        case "$response_code" in
+          404) echo "Release tag ${RELEASE_TAG} is available" ;;
+          200)
+            echo "::error::Release tag ${RELEASE_TAG} already exists, so ${GITHUB_REF_NAME} has already been released and is immutable. Create a new release branch with a higher version from main."
+            exit 1
+            ;;
+          *) echo "::error::Unable to check release tag ${RELEASE_TAG} (HTTP ${response_code})"; exit 1 ;;
+        esac

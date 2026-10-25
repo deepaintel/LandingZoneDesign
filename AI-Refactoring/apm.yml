@@ -1,0 +1,21 @@
+name: aws-sc-landing-zone
+version: 1.0.0
+description: APM project for aws-sc-landing-zone
+author: Flemming Behrend
+# Which agent platforms to deploy to.
+# Resolution order: --target flag > this field > auto-detect from filesystem.
+# Accepted values: agent-skills, antigravity, claude, codex, copilot, cursor, gemini, grok-build, kiro, opencode, windsurf
+targets:
+  - claude
+  - copilot
+dependencies:
+  apm: []
+  mcp:
+    - name: github-if-it
+      registry: false
+      transport: http
+      url: https://copilot-api.if-it.ghe.com/mcp
+      headers:
+        Authorization: 'Bearer ${GITHUB_COPILOT_PAT}'
+includes: auto
+scripts: {}

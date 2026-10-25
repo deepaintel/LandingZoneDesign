@@ -1,0 +1,101 @@
+name: Publish GitHub Release
+description: >
+  Publish the GitHub Release for an existing release tag. The notes are GitHub-generated, with the PRs
+  that an earlier release already shipped removed (`scripts/release-notes.ts`); when the notes cannot be
+  verified the step fails and no release is created. The tag must already point to `commit-sha`; this
+  action never lets GitHub create a tag. Idempotent: an existing published release is reused, and an
+  existing draft fails the run. Requires a token with `contents: write`, and the calling job must have
+  checked out the repository and run `setup-workspace` first. Governed by
+  `.apm/skills/manage-landing-zone-release-workflows/SKILL.md`.
+inputs:
+  github-token:
+    description: 'GitHub token with `contents: write` on the repository.'
+    required: true
+  release-tag:
+    description: Existing release tag to publish (for example `release-v0.0.1`).
+    required: true
+  commit-sha:
+    description: Production-validated commit that the release tag must point to.
+    required: true
+outputs:
+  release-url:
+    description: HTML URL of the published GitHub Release.
+    value: ${{ steps.release.outputs.release-url }}
+runs:
+  using: composite
+  steps:
+    - name: Create GitHub Release with generated notes
+      id: release
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        COMMIT_SHA: ${{ inputs.commit-sha }}
+      run: |
+        set -euo pipefail
+        api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+        gh_api() {
+          curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'Accept: application/vnd.github+json' "$@"
+        }
+        if [ -z "$RELEASE_TAG" ]; then
+          echo "::error::Tag job did not produce a release tag"
+          exit 1
+        fi
+        encoded_tag=$(jq -rn --arg tag "$RELEASE_TAG" '$tag | @uri')
+
+        # Attach the release to the existing tag on the Production-validated commit; never
+        # let GitHub create a tag on another commit.
+        tag_ref=$(gh_api "${api}/git/ref/tags/${encoded_tag}")
+        tag_sha=$(jq -r '.object.sha' <<< "$tag_ref")
+        if [ "$(jq -r '.object.type' <<< "$tag_ref")" = tag ]; then
+          tag_sha=$(gh_api "${api}/git/tags/${tag_sha}" | jq -r '.object.sha')
+        fi
+        if [ "$tag_sha" != "$COMMIT_SHA" ]; then
+          echo "::error::Release tag ${RELEASE_TAG} points to ${tag_sha}, not ${COMMIT_SHA}"
+          exit 1
+        fi
+
+        release_json="${RUNNER_TEMP}/release.json"
+        status=$(curl --silent --show-error --output "$release_json" --write-out '%{http_code}' \
+          -H "Authorization: Bearer ${GH_TOKEN}" \
+          -H 'Accept: application/vnd.github+json' \
+          "${api}/releases/tags/${encoded_tag}")
+        case "$status" in
+          200)
+            if [ "$(jq -r '.draft' "$release_json")" = true ]; then
+              echo "::error::A draft release already exists for ${RELEASE_TAG}; publish or delete it, then re-run"
+              exit 1
+            fi
+            echo "GitHub Release for ${RELEASE_TAG} already exists; not recreating it"
+            ;;
+          404)
+            # GitHub's generated notes list every PR whose commit is not in the previous tag's
+            # history. A backport squash has a different SHA than its original on main, so a
+            # change an earlier release shipped looks new again. The script keeps GitHub's notes,
+            # drops only the PRs an earlier release already shipped (commit equivalence over the
+            # real release-tag history), and fails without a body if the result is ambiguous.
+            # `set -e` then stops this step before any release is created; the tag stays.
+            if ! command -v pnpm > /dev/null; then
+              echo "::error::The workspace must be set up before publishing release notes (setup-workspace)"
+              exit 1
+            fi
+            notes_file="${RUNNER_TEMP}/release-notes.md"
+            rm -f "$notes_file"
+            pnpm exec tsx scripts/release-notes.ts publish \
+              --release-tag "$RELEASE_TAG" --commit-sha "$COMMIT_SHA" \
+              --fetch-history --output-file "$notes_file" \
+              --report-file "${RUNNER_TEMP}/release-notes-report.json"
+            payload=$(jq -n --arg tag "$RELEASE_TAG" --rawfile body "$notes_file" \
+              '{tag_name: $tag, name: $tag, body: $body, draft: false, prerelease: false, generate_release_notes: false}')
+            gh_api -X POST "${api}/releases" -d "$payload" > "$release_json"
+            ;;
+          *)
+            echo "::error::Unable to check GitHub Release for ${RELEASE_TAG} (HTTP ${status})"
+            exit 1
+            ;;
+        esac
+        release_url=$(jq -r '.html_url' "$release_json")
+        echo "release-url=${release_url}" >> "$GITHUB_OUTPUT"
+        echo "- GitHub Release: ${release_url}" >> "$GITHUB_STEP_SUMMARY"

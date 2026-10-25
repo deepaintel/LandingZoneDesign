@@ -1,0 +1,14 @@
+node_modules/
+cdk.out/
+dist/
+coverage/
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+.pnpm-store/
+.mcp.json
+
+
+# APM dependencies
+apm_modules/

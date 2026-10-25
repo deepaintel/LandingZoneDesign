@@ -1,0 +1,378 @@
+name: configure-control-tower-auto-enrollment
+description: >
+  Enable AWS Control Tower account auto-enrollment (Landing Zone remediation type INHERITANCE_DRIFT)
+  when the environment's `controlTower.autoEnrollment.enabled` is true. Enable only: a disabled
+  configuration with an enabled Landing Zone fails closed and is never turned into a disable call.
+  Runs a read-only plan (identity, Region, Landing Zone ARN, AWS CLI support, version 4.0, ACTIVE,
+  IN_SYNC, manifest unchanged, remediationTypes, in-progress Landing Zone operations) before the
+  only write in the repository's Control Tower settings path: one UpdateLandingZone with the live
+  Landing Zone ARN, the deployed version, the repository-built manifest and INHERITANCE_DRIFT. The
+  operation is polled with bounded rounds and verified read-only afterwards, including the existing
+  Control Tower enrollment validator when a Landing Zone operation ran.
+  Governed by `.apm/skills/control-tower-auto-enrollment/SKILL.md`. Supported environments are `staging` and
+  `production`; the first step refuses any other environment before an AWS API call is made.
+  github-actions-role sessions last one hour, so every phase refreshes OIDC credentials through
+  the approved reusable aws-credentials action, exactly like the enrollment action. Never calls
+  ResetLandingZone, CreateLandingZone, EnableBaseline or ResetEnabledBaseline.
+inputs:
+  environment:
+    description: Target environment, `staging` or `production`.
+    required: true
+  management-account-id:
+    description: 12-digit AWS Organizations management account ID (workspace output).
+    required: true
+  organization-id:
+    description: AWS Organizations organization ID (prepare-organization output), for the enrollment validator.
+    required: true
+  landing-zone-arn:
+    description: Control Tower Landing Zone ARN (initialize-control-tower output).
+    required: true
+  audit-account-id:
+    description: Audit account ID (deploy-shared-accounts output), used to build the expected manifest.
+    required: true
+  log-archive-account-id:
+    description: Log Archive account ID (deploy-shared-accounts output), used to build the expected manifest.
+    required: true
+  account-ids:
+    description: Newline-delimited `<key>=<12-digit account id>` pairs (deploy-landing-zone-accounts output).
+    required: true
+  ou-ids:
+    description: Newline-delimited `<ou path>=<ou id>` pairs (deploy-landing-zone-accounts output).
+    required: true
+  aws-region:
+    description: AWS ESC home Region.
+    required: false
+    default: eusc-de-east-1
+  aws-partition:
+    description: Partition value for the reusable aws-credentials action.
+    required: false
+    default: eusc
+  deployment-role-name:
+    description: OIDC deployment role assumed for every phase.
+    required: false
+    default: github-actions-role
+  job-started-at:
+    description: Job start time in epoch seconds, recorded by the first step of the calling job.
+    required: true
+  job-timeout-minutes:
+    description: The calling job's timeout-minutes.
+    required: false
+    default: '360'
+  session-budget-seconds:
+    description: Seconds of work per round; must stay below the one-hour credential lifetime.
+    required: false
+    default: '3000'
+outputs:
+  auto-enrollment:
+    description: Live auto-enrollment setting after verification, `enabled` or `disabled`.
+    value: ${{ steps.verify.outputs.auto-enrollment }}
+  operation-identifier:
+    description: Landing Zone operation awaited or submitted by this run; empty when nothing changed.
+    value: ${{ steps.rounds.outputs.operation-identifier }}
+  update-submitted:
+    description: '`true` when this run called UpdateLandingZone, otherwise `false`.'
+    value: ${{ steps.rounds.outputs.update-submitted }}
+runs:
+  using: composite
+  steps:
+    - name: Refuse unsupported environments (staging and production only)
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        case "${ENVIRONMENT_NAME}" in
+          staging|production) echo "Environment='${ENVIRONMENT_NAME}' - Control Tower auto-enrollment configuration authorised." ;;
+          *)
+            echo "::error::Control Tower auto-enrollment supports only staging and production; refusing environment '${ENVIRONMENT_NAME}'."
+            exit 1 ;;
+        esac
+
+    - name: Validate auto-enrollment inputs
+      id: inputs
+      shell: bash
+      env:
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS: ${{ inputs.account-ids }}
+        OU_IDS: ${{ inputs.ou-ids }}
+        JOB_STARTED_AT: ${{ inputs.job-started-at }}
+        JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        for pair in "management-account-id=${MANAGEMENT_ACCOUNT_ID}" "audit-account-id=${AUDIT_ACCOUNT_ID}" \
+                    "log-archive-account-id=${LOG_ARCHIVE_ACCOUNT_ID}"; do
+          if ! printf '%s' "${pair#*=}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::${pair%%=*} '${pair#*=}' is not a 12-digit AWS account ID."
+            exit 1
+          fi
+        done
+        if [ "${AUDIT_ACCOUNT_ID}" = "${LOG_ARCHIVE_ACCOUNT_ID}" ]; then
+          echo "::error::audit-account-id and log-archive-account-id must differ."
+          exit 1
+        fi
+        if ! printf '%s' "${ORGANIZATION_ID}" | grep -qE '^o-[0-9a-z]{10,32}$'; then
+          echo "::error::organization-id '${ORGANIZATION_ID}' is not an AWS Organizations ID."
+          exit 1
+        fi
+        if ! printf '%s' "${LANDING_ZONE_ARN}" | grep -qE '^arn:aws-eusc:controltower:[a-z0-9-]+:[0-9]{12}:landingzone/.+$'; then
+          echo "::error::landing-zone-arn '${LANDING_ZONE_ARN}' is not an aws-eusc Control Tower Landing Zone ARN."
+          exit 1
+        fi
+        if ! printf '%s\n' "${ACCOUNT_IDS}" | grep -qE '^[a-zA-Z0-9]+=[0-9]{12}$'; then
+          echo "::error::account-ids carries no '<key>=<account id>' line."
+          exit 1
+        fi
+        if ! printf '%s\n' "${OU_IDS}" | grep -qE '^[A-Za-z0-9/ -]+=ou-[0-9a-z]{4,32}-[0-9a-z]{8,32}$'; then
+          echo "::error::ou-ids carries no '<ou path>=<ou id>' line."
+          exit 1
+        fi
+        for number in "${JOB_STARTED_AT}" "${JOB_TIMEOUT_MINUTES}" "${SESSION_BUDGET_SECONDS}"; do
+          if ! printf '%s' "${number}" | grep -qE '^[0-9]+$'; then
+            echo "::error::'${number}' is not a whole number."
+            exit 1
+          fi
+        done
+        if [ "${SESSION_BUDGET_SECONDS}" -ge 3600 ]; then
+          echo "::error::session-budget-seconds must stay below the one-hour credential lifetime."
+          exit 1
+        fi
+        ACCOUNT_IDS_FILE="${RUNNER_TEMP}/ct-auto-enrollment-account-ids"
+        printf '%s\n' "${ACCOUNT_IDS}" > "${ACCOUNT_IDS_FILE}"
+        OU_IDS_FILE="${RUNNER_TEMP}/ct-auto-enrollment-ou-ids"
+        printf '%s\n' "${OU_IDS}" > "${OU_IDS_FILE}"
+        {
+          echo "account-ids-file=${ACCOUNT_IDS_FILE}"
+          echo "ou-ids-file=${OU_IDS_FILE}"
+          echo "state-file=${RUNNER_TEMP}/ct-auto-enrollment-run-ledger.json"
+          echo "job-deadline=$(( JOB_STARTED_AT + JOB_TIMEOUT_MINUTES * 60 ))"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Refresh OIDC credentials (auto-enrollment plan)
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-autoenroll-plan-${{ github.run_id }}
+
+    - name: Auto-enrollment plan and prechecks (read-only)
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+      run: |
+        set -euo pipefail
+        pnpm run configure:control-tower-auto-enrollment -- --mode plan \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}"
+
+    # Up to three credential rounds of at most `session-budget-seconds` each. A round reports
+    # `complete`, `continue` (credential budget used; the next round resumes by finding the
+    # in-progress operation, never by resubmitting) or `job-budget-exhausted`. The rounds are
+    # identical apart from their step IDs and the guard on the previous round.
+    - name: Refresh OIDC credentials (auto-enrollment round 1)
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-autoenroll-1-${{ github.run_id }}
+
+    - name: Configure auto-enrollment (round 1)
+      id: round_1
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run configure:control-tower-auto-enrollment -- --mode apply \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Refresh OIDC credentials (auto-enrollment round 2)
+      if: ${{ steps.round_1.outputs.status == 'continue' }}
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-autoenroll-2-${{ github.run_id }}
+
+    - name: Configure auto-enrollment (round 2)
+      id: round_2
+      if: ${{ steps.round_1.outputs.status == 'continue' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run configure:control-tower-auto-enrollment -- --mode apply \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Refresh OIDC credentials (auto-enrollment round 3)
+      if: ${{ steps.round_2.outputs.status == 'continue' }}
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-autoenroll-3-${{ github.run_id }}
+
+    - name: Configure auto-enrollment (round 3)
+      id: round_3
+      if: ${{ steps.round_2.outputs.status == 'continue' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run configure:control-tower-auto-enrollment -- --mode apply \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Check that auto-enrollment finished within the job budget
+      id: rounds
+      shell: bash
+      env:
+        STATUSES: >-
+          ${{ steps.round_1.outputs.status }} ${{ steps.round_2.outputs.status }} ${{ steps.round_3.outputs.status }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+      run: |
+        set -euo pipefail
+        OPERATION=""
+        SUBMITTED="false"
+        if [ -f "${STATE_FILE}" ]; then
+          OPERATION=$(jq -r '.lastOperationIdentifier // ""' "${STATE_FILE}")
+          SUBMITTED=$(jq -r 'if .updateAttempted == true then "true" else "false" end' "${STATE_FILE}")
+        fi
+        {
+          echo "operation-identifier=${OPERATION}"
+          echo "update-submitted=${SUBMITTED}"
+        } >> "$GITHUB_OUTPUT"
+        LAST=$(printf '%s\n' ${STATUSES} | tail -n 1)
+        case "${LAST}" in
+          complete)
+            echo "Auto-enrollment rounds completed (operation: ${OPERATION:-none}; UpdateLandingZone submitted: ${SUBMITTED})." ;;
+          continue)
+            echo "::error::Auto-enrollment did not finish within three credential rounds. Re-run the workflow; it finds the in-progress Landing Zone operation and polls it, never resubmitting."
+            exit 1 ;;
+          job-budget-exhausted)
+            echo "::error::Not enough job time was left for UpdateLandingZone, its polling and verification, or polling reached the job deadline. Re-run the workflow; governed OUs are skipped, and an in-progress operation is polled, never resubmitted."
+            exit 1 ;;
+          *)
+            echo "::error::Unexpected auto-enrollment status '${LAST}'."
+            exit 1 ;;
+        esac
+
+    - name: Refresh OIDC credentials (auto-enrollment verification)
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-autoenroll-verify-${{ github.run_id }}
+
+    - name: Auto-enrollment verification (read-only)
+      id: verify
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+      run: |
+        set -euo pipefail
+        pnpm run configure:control-tower-auto-enrollment -- --mode verify \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}"
+
+    # After a Landing Zone operation the existing read-only enrollment validator must still pass:
+    # every rollout OU governed, every configured account enrolled, Security OU checks unchanged.
+    - name: Control Tower enrollment validation after the Landing Zone update (read-only)
+      if: ${{ steps.rounds.outputs.operation-identifier != '' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+      run: |
+        set -euo pipefail
+        pnpm run validate:control-tower-enrollment -- \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}"

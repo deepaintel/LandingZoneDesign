@@ -1,0 +1,58 @@
+name: Tag release
+description: >
+  Create and push the annotated release tag on the Production-validated commit. Idempotent: a tag
+  pushed to the same commit by an earlier attempt is accepted, and an existing tag on any other commit
+  fails the run. Requires a checkout of the release commit and a token with `contents: write` (the
+  checkout's persisted credentials are used for the push). Governed by
+  `.apm/skills/manage-landing-zone-release-workflows/SKILL.md`.
+inputs:
+  release-tag:
+    description: Release tag name produced by the verify-release-branch action (for example `release-v0.0.1`).
+    required: true
+  commit-sha:
+    description: Production-validated release commit to tag.
+    required: true
+outputs:
+  release-tag:
+    description: The release tag that now points to `commit-sha`.
+    value: ${{ steps.tag.outputs.release-tag }}
+runs:
+  using: composite
+  steps:
+    - name: Tag validated release commit
+      id: tag
+      shell: bash
+      env:
+        RELEASE_TAG: ${{ inputs.release-tag }}
+        COMMIT_SHA: ${{ inputs.commit-sha }}
+      run: |
+        set -euo pipefail
+        if [ "$(git rev-parse HEAD)" != "$COMMIT_SHA" ]; then
+          echo "::error::Checked-out commit does not match the Staging-validated release SHA"
+          exit 1
+        fi
+        if [ -z "$RELEASE_TAG" ]; then
+          echo "::error::Release verification did not produce a tag name"
+          exit 1
+        fi
+        # A re-run must not fail on a tag pushed by an earlier attempt of this run, but an
+        # existing tag on any other commit is a hard failure.
+        existing_sha=$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}^{}" | cut -f1)
+        if [ -z "$existing_sha" ]; then
+          existing_sha=$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}" | cut -f1)
+        fi
+        if [ -n "$existing_sha" ]; then
+          if [ "$existing_sha" != "$COMMIT_SHA" ]; then
+            echo "::error::Release tag ${RELEASE_TAG} already exists on ${existing_sha}, not ${COMMIT_SHA}"
+            exit 1
+          fi
+          echo "Release tag ${RELEASE_TAG} already points to ${COMMIT_SHA}; nothing to push"
+        else
+          git config user.name "github-actions[bot]"
+          # 41898282 is GitHub Actions' bot ID in GitHub's ID+username noreply email format.
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" -m "Successful production deployment" "$COMMIT_SHA"
+          git push origin "refs/tags/${RELEASE_TAG}"
+        fi
+        echo "release-tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+        echo "- Release tag created and pushed: \`${RELEASE_TAG}\`" >> "$GITHUB_STEP_SUMMARY"

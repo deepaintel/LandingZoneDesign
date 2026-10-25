@@ -1,0 +1,491 @@
+name: enroll-control-tower-accounts
+description: >
+  Enroll the Landing Zone OUs and their configured accounts into AWS Control Tower by enabling
+  AWSControlTowerBaseline on each OU of `controlTower.enrollment.rolloutOrder`, parents before
+  children. Staging and Production share the same 12-OU scope; empty OUs are registered too. Runs the read-only plan (baseline discovery, version resolution, Landing Zone
+  health and auto-enrollment setting, account handoff and live account checks, enabled-baseline
+  classification, SCP headroom, AWS Config precheck, Security OU health) before any mutation, then enrolls in
+  credential-sized rounds and finishes with read-only validation.
+  Governed by `.apm/skills/control-tower-account-enrollment/SKILL.md`. Supported environments are `staging`
+  and `production`; the first step refuses any other environment before an AWS API call is made.
+  github-actions-role sessions last one hour, so every round refreshes OIDC credentials through
+  the approved reusable aws-credentials action and stops starting new work after
+  `session-budget-seconds`; the next round resumes from live Control Tower state. Requires the
+  calling job to grant `id-token: write`, to have set up the workspace, and to have run the
+  Landing Zone account provisioning step whose `account-ids` and `ou-ids` outputs are passed
+  here; both are cross-checked against the live Organization before any mutation. Creates
+  nothing in member accounts and never pre-creates AWSControlTowerExecution.
+inputs:
+  environment:
+    description: Target environment, `staging` or `production`.
+    required: true
+  management-account-id:
+    description: 12-digit AWS Organizations management account ID (workspace output).
+    required: true
+  organization-id:
+    description: AWS Organizations organization ID (prepare-organization output).
+    required: true
+  landing-zone-arn:
+    description: Control Tower Landing Zone ARN (initialize-control-tower output).
+    required: true
+  audit-account-id:
+    description: Audit account ID (deploy-shared-accounts output).
+    required: true
+  log-archive-account-id:
+    description: Log Archive account ID (deploy-shared-accounts output).
+    required: true
+  account-ids:
+    description: Newline-delimited `<key>=<12-digit account id>` pairs (deploy-landing-zone-accounts output).
+    required: true
+  ou-ids:
+    description: Newline-delimited `<ou path>=<ou id>` pairs (deploy-landing-zone-accounts output).
+    required: true
+  aws-region:
+    description: AWS ESC home Region.
+    required: false
+    default: eusc-de-east-1
+  aws-partition:
+    description: Partition value for the reusable aws-credentials action.
+    required: false
+    default: eusc
+  deployment-role-name:
+    description: OIDC deployment role assumed for every round.
+    required: false
+    default: github-actions-role
+  job-started-at:
+    description: Job start time in epoch seconds, recorded by the first step of the calling job.
+    required: true
+  job-timeout-minutes:
+    description: The calling job's timeout-minutes.
+    required: false
+    default: '360'
+  session-budget-seconds:
+    description: Seconds of work per round; must stay below the one-hour credential lifetime.
+    required: false
+    default: '3000'
+outputs:
+  status:
+    description: '`complete` when every rollout OU is governed and validated.'
+    value: ${{ steps.validate.outputs.status }}
+runs:
+  using: composite
+  steps:
+    - name: Refuse unsupported environments (staging and production only)
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+      run: |
+        set -euo pipefail
+        case "${ENVIRONMENT_NAME}" in
+          staging|production) echo "Environment='${ENVIRONMENT_NAME}' - Control Tower enrollment authorised." ;;
+          *)
+            echo "::error::Control Tower OU enrollment supports only staging and production; refusing environment '${ENVIRONMENT_NAME}'."
+            exit 1 ;;
+        esac
+
+    - name: Validate enrollment inputs
+      id: inputs
+      shell: bash
+      env:
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS: ${{ inputs.account-ids }}
+        OU_IDS: ${{ inputs.ou-ids }}
+        JOB_STARTED_AT: ${{ inputs.job-started-at }}
+        JOB_TIMEOUT_MINUTES: ${{ inputs.job-timeout-minutes }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        for pair in "management-account-id=${MANAGEMENT_ACCOUNT_ID}" "audit-account-id=${AUDIT_ACCOUNT_ID}" \
+                    "log-archive-account-id=${LOG_ARCHIVE_ACCOUNT_ID}"; do
+          if ! printf '%s' "${pair#*=}" | grep -qE '^[0-9]{12}$'; then
+            echo "::error::${pair%%=*} '${pair#*=}' is not a 12-digit AWS account ID."
+            exit 1
+          fi
+        done
+        if ! printf '%s' "${ORGANIZATION_ID}" | grep -qE '^o-[0-9a-z]{10,32}$'; then
+          echo "::error::organization-id '${ORGANIZATION_ID}' is not an AWS Organizations ID."
+          exit 1
+        fi
+        if ! printf '%s' "${LANDING_ZONE_ARN}" | grep -qE '^arn:aws-eusc:controltower:[a-z0-9-]+:[0-9]{12}:landingzone/.+$'; then
+          echo "::error::landing-zone-arn '${LANDING_ZONE_ARN}' is not an aws-eusc Control Tower Landing Zone ARN."
+          exit 1
+        fi
+        if ! printf '%s\n' "${ACCOUNT_IDS}" | grep -qE '^[a-zA-Z0-9]+=[0-9]{12}$'; then
+          echo "::error::account-ids carries no '<key>=<account id>' line."
+          exit 1
+        fi
+        if ! printf '%s\n' "${OU_IDS}" | grep -qE '^[A-Za-z0-9/ -]+=ou-[0-9a-z]{4,32}-[0-9a-z]{8,32}$'; then
+          echo "::error::ou-ids carries no '<ou path>=<ou id>' line."
+          exit 1
+        fi
+        for number in "${JOB_STARTED_AT}" "${JOB_TIMEOUT_MINUTES}" "${SESSION_BUDGET_SECONDS}"; do
+          if ! printf '%s' "${number}" | grep -qE '^[0-9]+$'; then
+            echo "::error::'${number}' is not a whole number."
+            exit 1
+          fi
+        done
+        if [ "${SESSION_BUDGET_SECONDS}" -ge 3600 ]; then
+          echo "::error::session-budget-seconds must stay below the one-hour credential lifetime."
+          exit 1
+        fi
+        ACCOUNT_IDS_FILE="${RUNNER_TEMP}/ct-enrollment-account-ids"
+        printf '%s\n' "${ACCOUNT_IDS}" > "${ACCOUNT_IDS_FILE}"
+        OU_IDS_FILE="${RUNNER_TEMP}/ct-enrollment-ou-ids"
+        printf '%s\n' "${OU_IDS}" > "${OU_IDS_FILE}"
+        {
+          echo "account-ids-file=${ACCOUNT_IDS_FILE}"
+          echo "ou-ids-file=${OU_IDS_FILE}"
+          echo "state-file=${RUNNER_TEMP}/ct-enrollment-run-ledger.json"
+          echo "job-deadline=$(( JOB_STARTED_AT + JOB_TIMEOUT_MINUTES * 60 ))"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Refresh OIDC credentials (plan)
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-plan-${{ github.run_id }}
+
+    - name: Enrollment plan and prechecks (read-only)
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+      run: |
+        set -euo pipefail
+        pnpm run enroll:control-tower-accounts -- --mode plan \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}" \
+          --state-file "${STATE_FILE}"
+
+    # Six credential rounds of at most `session-budget-seconds` each. A round reports `complete`,
+    # `continue` (credential budget used; the next round resumes) or `job-budget-exhausted`.
+    # The rounds are identical apart from their step IDs and the guard on the previous round.
+    - name: Refresh OIDC credentials (enrollment round 1)
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-enroll-1-${{ github.run_id }}
+
+    - name: Enroll OUs (round 1)
+      id: round_1
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run enroll:control-tower-accounts -- --mode enroll \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Refresh OIDC credentials (enrollment round 2)
+      if: ${{ steps.round_1.outputs.status == 'continue' }}
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-enroll-2-${{ github.run_id }}
+
+    - name: Enroll OUs (round 2)
+      id: round_2
+      if: ${{ steps.round_1.outputs.status == 'continue' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run enroll:control-tower-accounts -- --mode enroll \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Refresh OIDC credentials (enrollment round 3)
+      if: ${{ steps.round_2.outputs.status == 'continue' }}
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-enroll-3-${{ github.run_id }}
+
+    - name: Enroll OUs (round 3)
+      id: round_3
+      if: ${{ steps.round_2.outputs.status == 'continue' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run enroll:control-tower-accounts -- --mode enroll \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Refresh OIDC credentials (enrollment round 4)
+      if: ${{ steps.round_3.outputs.status == 'continue' }}
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-enroll-4-${{ github.run_id }}
+
+    - name: Enroll OUs (round 4)
+      id: round_4
+      if: ${{ steps.round_3.outputs.status == 'continue' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run enroll:control-tower-accounts -- --mode enroll \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Refresh OIDC credentials (enrollment round 5)
+      if: ${{ steps.round_4.outputs.status == 'continue' }}
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-enroll-5-${{ github.run_id }}
+
+    - name: Enroll OUs (round 5)
+      id: round_5
+      if: ${{ steps.round_4.outputs.status == 'continue' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run enroll:control-tower-accounts -- --mode enroll \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Refresh OIDC credentials (enrollment round 6)
+      if: ${{ steps.round_5.outputs.status == 'continue' }}
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-enroll-6-${{ github.run_id }}
+
+    - name: Enroll OUs (round 6)
+      id: round_6
+      if: ${{ steps.round_5.outputs.status == 'continue' }}
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+        STATE_FILE: ${{ steps.inputs.outputs.state-file }}
+        JOB_DEADLINE: ${{ steps.inputs.outputs.job-deadline }}
+        SESSION_BUDGET_SECONDS: ${{ inputs.session-budget-seconds }}
+      run: |
+        set -euo pipefail
+        pnpm run enroll:control-tower-accounts -- --mode enroll \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}" \
+          --state-file "${STATE_FILE}" \
+          --session-budget-seconds "${SESSION_BUDGET_SECONDS}" \
+          --job-deadline-epoch "${JOB_DEADLINE}"
+
+    - name: Check that enrollment finished within the job budget
+      shell: bash
+      env:
+        STATUSES: >-
+          ${{ steps.round_1.outputs.status }} ${{ steps.round_2.outputs.status }}
+          ${{ steps.round_3.outputs.status }} ${{ steps.round_4.outputs.status }}
+          ${{ steps.round_5.outputs.status }} ${{ steps.round_6.outputs.status }}
+      run: |
+        set -euo pipefail
+        LAST=$(printf '%s\n' ${STATUSES} | tail -n 1)
+        case "${LAST}" in
+          complete)
+            echo "Enrollment rounds completed." ;;
+          continue)
+            echo "::error::Enrollment did not finish within six credential rounds. Re-run the workflow; it resumes from live Control Tower state."
+            exit 1 ;;
+          job-budget-exhausted)
+            echo "::error::The job deadline is near, so enrollment stopped cleanly. Re-run the workflow; in-progress operations are polled, never resubmitted."
+            exit 1 ;;
+          *)
+            echo "::error::Unexpected enrollment status '${LAST}'."
+            exit 1 ;;
+        esac
+
+    - name: Refresh OIDC credentials (validation)
+      uses: ccoe-aws/reusable-workflows/.github/actions/aws-credentials@main
+      with:
+        auth-method: oidc
+        aws-partition: ${{ inputs.aws-partition }}
+        aws-region: ${{ inputs.aws-region }}
+        aws-account-id: ${{ inputs.management-account-id }}
+        aws-role-name: ${{ inputs.deployment-role-name }}
+        aws-session-name: lz-${{ inputs.environment }}-ct-validate-${{ github.run_id }}
+
+    - name: Control Tower enrollment validation (read-only)
+      id: validate
+      shell: bash
+      env:
+        ENVIRONMENT_NAME: ${{ inputs.environment }}
+        MANAGEMENT_ACCOUNT_ID: ${{ inputs.management-account-id }}
+        ORGANIZATION_ID: ${{ inputs.organization-id }}
+        LANDING_ZONE_ARN: ${{ inputs.landing-zone-arn }}
+        AUDIT_ACCOUNT_ID: ${{ inputs.audit-account-id }}
+        LOG_ARCHIVE_ACCOUNT_ID: ${{ inputs.log-archive-account-id }}
+        ACCOUNT_IDS_FILE: ${{ steps.inputs.outputs.account-ids-file }}
+        OU_IDS_FILE: ${{ steps.inputs.outputs.ou-ids-file }}
+      run: |
+        set -euo pipefail
+        pnpm run validate:control-tower-enrollment -- \
+          --environment "${ENVIRONMENT_NAME}" \
+          --management-account-id "${MANAGEMENT_ACCOUNT_ID}" \
+          --organization-id "${ORGANIZATION_ID}" \
+          --landing-zone-arn "${LANDING_ZONE_ARN}" \
+          --audit-account-id "${AUDIT_ACCOUNT_ID}" \
+          --log-archive-account-id "${LOG_ARCHIVE_ACCOUNT_ID}" \
+          --account-ids-file "${ACCOUNT_IDS_FILE}" \
+          --ou-ids-file "${OU_IDS_FILE}"
+        echo "status=complete" >> "$GITHUB_OUTPUT"

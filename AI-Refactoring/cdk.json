@@ -1,0 +1,9 @@
+{
+  "app": "npx tsx bin/landing-zone.ts",
+  "output": "cdk.out",
+  "versionReporting": false,
+  "watch": {
+    "exclude": ["node_modules/**", "cdk.out/**", "dist/**", "tests/**", "**/*.test.ts"]
+  },
+  "context": {}
+}
