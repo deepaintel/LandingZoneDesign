@@ -1,0 +1,204 @@
+{
+    "enabledControls": [
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/19QITFF7IKSK3NAW",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_CLOUDWATCH_EVENTS_CHANGE_PROHIBITED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "632adbf3-4bf1-47d6-964e-04a8d4d6a01f"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/29B5GEJATC7WOXDH",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_CONFIG_CHANGE_PROHIBITED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "d3bb4c81-2102-47cd-9c5b-a41ccf9f0b8a"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/918LT9N4ZKV75LML",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_CONFIG_ENABLED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "3101057b-93cc-4412-ba37-23869bb201a4"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/19QITH6L4OT5WOB3",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_CONFIG_RULE_CHANGE_PROHIBITED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "c4ee83f5-7564-4eeb-ae17-fed32083f230"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/KBSD2URA8020QFEQ",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_IAM_ROLE_CHANGE_PROHIBITED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "1584b358-f3ca-4dd9-a5fe-b06870f03f2e"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/14NKQ5PIPSVIFMEX",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_LAMBDA_CHANGE_PROHIBITED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "a41e098c-ef07-453a-b324-f3c030ed00f1"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/4IMAWMTJ40BZKQ88",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_LOG_GROUP_POLICY",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "e4adefb4-457f-45b3-83b4-ad759d40efc7"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/52Y39UYRCDBYAJ1X",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_SNS_CHANGE_PROHIBITED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "38331ebe-40bd-4c56-949b-046ae9534b83"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/2JH1MUUEO0I5XWRO",
+            "controlIdentifier": "arn:aws-eusc:controltower:eusc-de-east-1::control/AWS-GR_SNS_SUBSCRIPTION_CHANGE_PROHIBITED",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "6973c002-d8b9-4368-90a1-5f4bc8d207fc"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        },
+        {
+            "arn": "arn:aws-eusc:controltower:eusc-de-east-1:118669550429:enabledcontrol/A687DCC9S9IF4QI0",
+            "controlIdentifier": "arn:aws-eusc:controlcatalog:::control/2i4ram4ies12xq8qqfu4sj959",
+            "targetIdentifier": "arn:aws-eusc:organizations::118669550429:ou/o-ibm8d4pcft/ou-9cs8-8c6cop5x",
+            "statusSummary": {
+                "status": "SUCCEEDED",
+                "lastOperationIdentifier": "efe9c741-1bc9-4e14-8b61-ae4275563af8"
+            },
+            "driftStatusSummary": {
+                "driftStatus": "NOT_CHECKING",
+                "types": {
+                    "inheritance": {
+                        "status": "IN_SYNC"
+                    },
+                    "resource": {
+                        "status": "NOT_CHECKING"
+                    }
+                }
+            }
+        }
+    ]
+}

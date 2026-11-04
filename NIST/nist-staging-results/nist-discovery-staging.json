@@ -1,0 +1,238 @@
+{
+  "environment": "staging",
+  "timestamp_utc": "2026-11-04T06:27:46.862099+00:00",
+  "region": "eusc-de-east-1",
+  "account": "118669550429",
+  "identity_arn": "arn:aws-eusc:sts::118669550429:assumed-role/AWSReservedSSO_ReadOnly-PS_57c9580b347e7ea1/DeepaK10@hexaware.com",
+  "read_only": true,
+  "controls": [
+    {
+      "id": "DC-004",
+      "nist": "SC-7, AC-3",
+      "expected_implementation_identifier": "RDS_INSTANCE_PUBLIC_ACCESS_CHECK",
+      "status": "CATALOG MATCH \u2014 parameters require review",
+      "candidates": [
+        {
+          "arn": "arn:aws-eusc:controlcatalog:::control/4jc77cq1lcr7g64xywwypykv8",
+          "summary": {
+            "Arn": "arn:aws-eusc:controlcatalog:::control/4jc77cq1lcr7g64xywwypykv8",
+            "Aliases": [
+              "AWS-GR_RDS_INSTANCE_PUBLIC_ACCESS_CHECK"
+            ],
+            "Name": "Disallow public access to RDS database instances",
+            "Description": "Secure your Amazon RDS database instances by disallowing public access.",
+            "Behavior": "DETECTIVE",
+            "Severity": "CRITICAL",
+            "Implementation": {
+              "Type": "AWS::Config::ConfigRule",
+              "Identifier": "RDS_INSTANCE_PUBLIC_ACCESS_CHECK"
+            },
+            "CreateTime": "2019-07-30T05:30:00+05:30",
+            "GovernedResources": [
+              "AWS::RDS::DBInstance"
+            ]
+          },
+          "behavior": "DETECTIVE",
+          "implementation": {
+            "Type": "AWS::Config::ConfigRule",
+            "Identifier": "RDS_INSTANCE_PUBLIC_ACCESS_CHECK"
+          },
+          "region_configuration": {
+            "Scope": "REGIONAL",
+            "DeployableRegions": [
+              "eusc-de-east-1"
+            ]
+          },
+          "parameter_requirement": null,
+          "parameters": [],
+          "catalog_criteria_met": true,
+          "parameter_free_candidate": false
+        }
+      ]
+    },
+    {
+      "id": "DC-006",
+      "nist": "SC-12",
+      "expected_implementation_identifier": "CMK_BACKING_KEY_ROTATION_ENABLED",
+      "status": "CATALOG MATCH \u2014 parameters require review",
+      "candidates": [
+        {
+          "arn": "arn:aws-eusc:controlcatalog:::control/7305ygy72ra2amwqjl1bqrmrw",
+          "summary": {
+            "Arn": "arn:aws-eusc:controlcatalog:::control/7305ygy72ra2amwqjl1bqrmrw",
+            "Aliases": [
+              "CONFIG.KMS.DT.3"
+            ],
+            "Name": "Checks if automatic key rotation is enabled for each key and matches to the key ID of the customer created AWS KMS key",
+            "Description": "Checks if automatic key rotation is enabled for each key and matches to the key ID of the customer created AWS KMS key. The rule is NON_COMPLIANT if the AWS Config recorder role for a resource does not have the kms:DescribeKey permission.",
+            "Behavior": "DETECTIVE",
+            "Severity": "MEDIUM",
+            "Implementation": {
+              "Type": "AWS::Config::ConfigRule",
+              "Identifier": "CMK_BACKING_KEY_ROTATION_ENABLED"
+            },
+            "CreateTime": "2018-10-24T05:30:00+05:30",
+            "GovernedResources": [
+              "AWS::KMS::Key"
+            ]
+          },
+          "behavior": "DETECTIVE",
+          "implementation": {
+            "Type": "AWS::Config::ConfigRule",
+            "Identifier": "CMK_BACKING_KEY_ROTATION_ENABLED"
+          },
+          "region_configuration": {
+            "Scope": "REGIONAL",
+            "DeployableRegions": [
+              "eusc-de-east-1"
+            ]
+          },
+          "parameter_requirement": null,
+          "parameters": [],
+          "catalog_criteria_met": true,
+          "parameter_free_candidate": false
+        }
+      ]
+    },
+    {
+      "id": "DC-003",
+      "nist": "SC-28",
+      "expected_implementation_identifier": "ENCRYPTED_VOLUMES",
+      "status": "CATALOG MATCH \u2014 parameters require review",
+      "candidates": [
+        {
+          "arn": "arn:aws-eusc:controlcatalog:::control/503uicglhjkokaajywfpt6ros",
+          "summary": {
+            "Arn": "arn:aws-eusc:controlcatalog:::control/503uicglhjkokaajywfpt6ros",
+            "Aliases": [
+              "AWS-GR_ENCRYPTED_VOLUMES"
+            ],
+            "Name": "Enable encryption for EBS volumes attached to EC2 instances",
+            "Description": "Secure EBS volumes attached to EC2 instances through encryption.",
+            "Behavior": "DETECTIVE",
+            "Severity": "MEDIUM",
+            "Implementation": {
+              "Type": "AWS::Config::ConfigRule",
+              "Identifier": "ENCRYPTED_VOLUMES"
+            },
+            "CreateTime": "2018-11-15T05:30:00+05:30",
+            "GovernedResources": [
+              "AWS::EC2::Volume"
+            ]
+          },
+          "behavior": "DETECTIVE",
+          "implementation": {
+            "Type": "AWS::Config::ConfigRule",
+            "Identifier": "ENCRYPTED_VOLUMES"
+          },
+          "region_configuration": {
+            "Scope": "REGIONAL",
+            "DeployableRegions": [
+              "eusc-de-east-1"
+            ]
+          },
+          "parameter_requirement": null,
+          "parameters": [
+            {
+              "Name": "kmsId"
+            }
+          ],
+          "catalog_criteria_met": true,
+          "parameter_free_candidate": false
+        }
+      ]
+    },
+    {
+      "id": "DC-005",
+      "nist": "SC-7, CM-7",
+      "expected_implementation_identifier": "INCOMING_SSH_DISABLED",
+      "status": "CATALOG MATCH \u2014 parameters require review",
+      "candidates": [
+        {
+          "arn": "arn:aws-eusc:controlcatalog:::control/6rilu41n0gb9w6mxrkyewoer4",
+          "summary": {
+            "Arn": "arn:aws-eusc:controlcatalog:::control/6rilu41n0gb9w6mxrkyewoer4",
+            "Aliases": [
+              "AWS-GR_RESTRICTED_SSH"
+            ],
+            "Name": "Disallow Internet connection via SSH",
+            "Description": "Reduces a server's exposure to risk by removing unfettered connectivity to remote console services such as SSH.",
+            "Behavior": "DETECTIVE",
+            "Severity": "HIGH",
+            "Implementation": {
+              "Type": "AWS::Config::ConfigRule",
+              "Identifier": "INCOMING_SSH_DISABLED"
+            },
+            "CreateTime": "2018-11-15T05:30:00+05:30",
+            "GovernedResources": [
+              "AWS::EC2::SecurityGroup"
+            ]
+          },
+          "behavior": "DETECTIVE",
+          "implementation": {
+            "Type": "AWS::Config::ConfigRule",
+            "Identifier": "INCOMING_SSH_DISABLED"
+          },
+          "region_configuration": {
+            "Scope": "REGIONAL",
+            "DeployableRegions": [
+              "eusc-de-east-1"
+            ]
+          },
+          "parameter_requirement": null,
+          "parameters": [],
+          "catalog_criteria_met": true,
+          "parameter_free_candidate": false
+        }
+      ]
+    },
+    {
+      "id": "DC-007",
+      "nist": "SC-12",
+      "expected_implementation_identifier": "KMS_CMK_NOT_SCHEDULED_FOR_DELETION",
+      "status": "CATALOG MATCH \u2014 parameters require review",
+      "candidates": [
+        {
+          "arn": "arn:aws-eusc:controlcatalog:::control/4kbh6euysu0ufxhdzh76kq6rd",
+          "summary": {
+            "Arn": "arn:aws-eusc:controlcatalog:::control/4kbh6euysu0ufxhdzh76kq6rd",
+            "Aliases": [
+              "CONFIG.KMS.DT.1"
+            ],
+            "Name": "Checks if AWS Key Management Service (AWS KMS) keys are not scheduled for deletion in AWS KMS",
+            "Description": "Checks if AWS Key Management Service (AWS KMS) keys are not scheduled for deletion in AWS KMS. The rule is NON_COMPLIANT if KMS keys are scheduled for deletion.",
+            "Behavior": "DETECTIVE",
+            "Severity": "CRITICAL",
+            "Implementation": {
+              "Type": "AWS::Config::ConfigRule",
+              "Identifier": "KMS_CMK_NOT_SCHEDULED_FOR_DELETION"
+            },
+            "CreateTime": "2019-05-30T05:30:00+05:30",
+            "GovernedResources": [
+              "AWS::KMS::Key"
+            ]
+          },
+          "behavior": "DETECTIVE",
+          "implementation": {
+            "Type": "AWS::Config::ConfigRule",
+            "Identifier": "KMS_CMK_NOT_SCHEDULED_FOR_DELETION"
+          },
+          "region_configuration": {
+            "Scope": "REGIONAL",
+            "DeployableRegions": [
+              "eusc-de-east-1"
+            ]
+          },
+          "parameter_requirement": null,
+          "parameters": [
+            {
+              "Name": "kmsKeyIds"
+            }
+          ],
+          "catalog_criteria_met": true,
+          "parameter_free_candidate": false
+        }
+      ]
+    }
+  ]
+}

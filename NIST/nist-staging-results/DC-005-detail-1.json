@@ -1,0 +1,25 @@
+{
+  "Arn": "arn:aws-eusc:controlcatalog:::control/6rilu41n0gb9w6mxrkyewoer4",
+  "Aliases": [
+    "AWS-GR_RESTRICTED_SSH"
+  ],
+  "Name": "Disallow Internet connection via SSH",
+  "Description": "Reduces a server's exposure to risk by removing unfettered connectivity to remote console services such as SSH.",
+  "Behavior": "DETECTIVE",
+  "Severity": "HIGH",
+  "RegionConfiguration": {
+    "Scope": "REGIONAL",
+    "DeployableRegions": [
+      "eusc-de-east-1"
+    ]
+  },
+  "Implementation": {
+    "Type": "AWS::Config::ConfigRule",
+    "Identifier": "INCOMING_SSH_DISABLED"
+  },
+  "Parameters": [],
+  "CreateTime": "2018-11-15T05:30:00+05:30",
+  "GovernedResources": [
+    "AWS::EC2::SecurityGroup"
+  ]
+}

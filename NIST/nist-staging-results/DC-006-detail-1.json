@@ -1,0 +1,25 @@
+{
+  "Arn": "arn:aws-eusc:controlcatalog:::control/7305ygy72ra2amwqjl1bqrmrw",
+  "Aliases": [
+    "CONFIG.KMS.DT.3"
+  ],
+  "Name": "Checks if automatic key rotation is enabled for each key and matches to the key ID of the customer created AWS KMS key",
+  "Description": "Checks if automatic key rotation is enabled for each key and matches to the key ID of the customer created AWS KMS key. The rule is NON_COMPLIANT if the AWS Config recorder role for a resource does not have the kms:DescribeKey permission.",
+  "Behavior": "DETECTIVE",
+  "Severity": "MEDIUM",
+  "RegionConfiguration": {
+    "Scope": "REGIONAL",
+    "DeployableRegions": [
+      "eusc-de-east-1"
+    ]
+  },
+  "Implementation": {
+    "Type": "AWS::Config::ConfigRule",
+    "Identifier": "CMK_BACKING_KEY_ROTATION_ENABLED"
+  },
+  "Parameters": [],
+  "CreateTime": "2018-10-24T05:30:00+05:30",
+  "GovernedResources": [
+    "AWS::KMS::Key"
+  ]
+}

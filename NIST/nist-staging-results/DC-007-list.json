@@ -1,0 +1,22 @@
+{
+  "Controls": [
+    {
+      "Arn": "arn:aws-eusc:controlcatalog:::control/4kbh6euysu0ufxhdzh76kq6rd",
+      "Aliases": [
+        "CONFIG.KMS.DT.1"
+      ],
+      "Name": "Checks if AWS Key Management Service (AWS KMS) keys are not scheduled for deletion in AWS KMS",
+      "Description": "Checks if AWS Key Management Service (AWS KMS) keys are not scheduled for deletion in AWS KMS. The rule is NON_COMPLIANT if KMS keys are scheduled for deletion.",
+      "Behavior": "DETECTIVE",
+      "Severity": "CRITICAL",
+      "Implementation": {
+        "Type": "AWS::Config::ConfigRule",
+        "Identifier": "KMS_CMK_NOT_SCHEDULED_FOR_DELETION"
+      },
+      "CreateTime": "2019-05-30T05:30:00+05:30",
+      "GovernedResources": [
+        "AWS::KMS::Key"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "Arn": "arn:aws-eusc:controlcatalog:::control/4jc77cq1lcr7g64xywwypykv8",
+  "Aliases": [
+    "AWS-GR_RDS_INSTANCE_PUBLIC_ACCESS_CHECK"
+  ],
+  "Name": "Disallow public access to RDS database instances",
+  "Description": "Secure your Amazon RDS database instances by disallowing public access.",
+  "Behavior": "DETECTIVE",
+  "Severity": "CRITICAL",
+  "RegionConfiguration": {
+    "Scope": "REGIONAL",
+    "DeployableRegions": [
+      "eusc-de-east-1"
+    ]
+  },
+  "Implementation": {
+    "Type": "AWS::Config::ConfigRule",
+    "Identifier": "RDS_INSTANCE_PUBLIC_ACCESS_CHECK"
+  },
+  "Parameters": [],
+  "CreateTime": "2019-07-30T05:30:00+05:30",
+  "GovernedResources": [
+    "AWS::RDS::DBInstance"
+  ]
+}

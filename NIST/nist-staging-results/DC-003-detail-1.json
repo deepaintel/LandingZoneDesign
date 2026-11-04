@@ -1,0 +1,29 @@
+{
+  "Arn": "arn:aws-eusc:controlcatalog:::control/503uicglhjkokaajywfpt6ros",
+  "Aliases": [
+    "AWS-GR_ENCRYPTED_VOLUMES"
+  ],
+  "Name": "Enable encryption for EBS volumes attached to EC2 instances",
+  "Description": "Secure EBS volumes attached to EC2 instances through encryption.",
+  "Behavior": "DETECTIVE",
+  "Severity": "MEDIUM",
+  "RegionConfiguration": {
+    "Scope": "REGIONAL",
+    "DeployableRegions": [
+      "eusc-de-east-1"
+    ]
+  },
+  "Implementation": {
+    "Type": "AWS::Config::ConfigRule",
+    "Identifier": "ENCRYPTED_VOLUMES"
+  },
+  "Parameters": [
+    {
+      "Name": "kmsId"
+    }
+  ],
+  "CreateTime": "2018-11-15T05:30:00+05:30",
+  "GovernedResources": [
+    "AWS::EC2::Volume"
+  ]
+}
